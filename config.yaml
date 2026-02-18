@@ -54,6 +54,20 @@ broadcast:
   mode: "24/7"
   breaking_news_transition_duration: 2  # seconds
   default_story_duration: null  # null = event-driven (wait for new RSS item)
+
+# TTS Configuration
+tts:
+  cache_dir: "/tmp/tts_cache"
+  model: "en_US-lessac-medium"  # Piper model to use
+
+# Video Loop Configuration
+video:
+  output_dir: "/tmp/video_loops"
+  default_duration: 30  # seconds
+
+# Narration Logging Configuration
+narration:
+  log_path: "/home/remvelchio/agent/tmp/scripts/narration.log"
   
 # Logging
 logging:
