@@ -87,12 +87,18 @@ class BroadcastPipeline:
         narration_config = config.get('narration', {})
         self.narration_log_path = narration_config.get(
             'log_path',
-            '/home/remvelchio/agent/tmp/scripts/narration.log'
+            '/tmp/narration.log'  # Use /tmp as fallback instead of /home/remvelchio
         )
         # Ensure narration log directory exists
         narration_log_dir = os.path.dirname(self.narration_log_path)
-        os.makedirs(narration_log_dir, exist_ok=True)
-        self.logger.info(f"Narration logging to: {self.narration_log_path}")
+        try:
+            os.makedirs(narration_log_dir, exist_ok=True)
+            self.logger.info(f"Narration logging to: {self.narration_log_path}")
+        except PermissionError as e:
+            # Fall back to temp directory if permission denied
+            self.narration_log_path = '/tmp/narration.log'
+            self.logger.warning(f"Permission denied for {narration_log_dir}, using {self.narration_log_path}")
+            os.makedirs(os.path.dirname(self.narration_log_path), exist_ok=True)
         
         # Track current audio and video
         self.current_audio_path: Optional[str] = None

@@ -20,10 +20,17 @@ A Python-based broadcast pipeline that implements a 24/7 "morning show" style ne
 
 ### CNN-Style Visual Stack
 - **Lower Thirds**: Dynamic graphics that update per anchor perspective
-- **Scrolling Ticker**: Continuous news ticker at bottom of screen
+- **Scrolling Ticker**: Continuous news ticker at bottom of screen (context-aware, updates per anchor)
 - **LIVE Tag**: Always visible with timestamp and episode ID
 - **Story Image**: Slow pan/zoom effects on story images
 - **All Elements**: Rendered simultaneously in a complete visual stack
+
+### TTS and Video Integration (NEW!)
+- **Narration Logging**: All anchor narrations logged with timestamp and anchor name
+- **Piper TTS Audio**: Automatic text-to-speech synthesis for each anchor rotation
+- **Audio Caching**: Intelligent caching to avoid regenerating identical narrations
+- **Video Loops**: MP4 generation with embedded audio for Owncast streaming
+- See [TTS_VIDEO_GUIDE.md](TTS_VIDEO_GUIDE.md) for detailed setup and usage
 
 ## Installation
 
@@ -241,11 +248,20 @@ logging:
 
 ## Requirements
 
+### Python Dependencies
 - Python 3.8+
 - feedparser 6.0.11
 - PyYAML 6.0.1
 - requests 2.31.0
-- Pillow 10.3.0
+- Pillow 12.1.1
+
+### System Dependencies (Optional - for TTS/Video)
+- **FFmpeg**: Required for video loop generation with audio
+  - Install: `apt-get install ffmpeg`
+- **Piper TTS**: Required for text-to-speech narration
+  - Install: See [TTS_VIDEO_GUIDE.md](TTS_VIDEO_GUIDE.md) for details
+
+**Note:** The system will run without FFmpeg/Piper, but TTS and video features will be disabled.
 
 ## License
 
