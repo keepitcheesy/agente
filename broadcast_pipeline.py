@@ -10,10 +10,14 @@ import time
 from typing import Optional, Dict
 from datetime import datetime
 import uuid
+import os
+from pathlib import Path
 
 from rss_monitor import RSSMonitor
 from anchor_cycler import AnchorCycler
 from visual_renderer import VisualStack
+from tts_local import LocalTTS
+from video_loop import VideoLoopGenerator
 
 
 class BroadcastState:
@@ -65,6 +69,35 @@ class BroadcastPipeline:
         
         visual_config = config.get('visuals', {})
         self.visual_stack = VisualStack(visual_config, self.episode_id)
+        
+        # Initialize TTS and video loop components
+        tts_config = config.get('tts', {})
+        self.tts = LocalTTS(
+            cache_dir=tts_config.get('cache_dir', '/tmp/tts_cache'),
+            model=tts_config.get('model', 'en_US-lessac-medium')
+        )
+        
+        video_config = config.get('video', {})
+        self.video_loop_generator = VideoLoopGenerator(
+            output_dir=video_config.get('output_dir', '/tmp/video_loops'),
+            default_duration=video_config.get('default_duration', 30)
+        )
+        
+        # Narration logging setup
+        narration_config = config.get('narration', {})
+        self.narration_log_path = narration_config.get(
+            'log_path',
+            '/home/remvelchio/agent/tmp/scripts/narration.log'
+        )
+        # Ensure narration log directory exists
+        narration_log_dir = os.path.dirname(self.narration_log_path)
+        os.makedirs(narration_log_dir, exist_ok=True)
+        self.logger.info(f"Narration logging to: {self.narration_log_path}")
+        
+        # Track current audio and video
+        self.current_audio_path: Optional[str] = None
+        self.current_video_path: Optional[str] = None
+        self.last_narration_text: Optional[str] = None
         
         # State tracking
         self.state = BroadcastState.IDLE
@@ -155,6 +188,9 @@ class BroadcastPipeline:
             if new_anchor:
                 self.stats['anchor_rotations'] += 1
                 self.logger.info(f"Anchor rotated to: {new_anchor.name}")
+                
+                # Generate narration text and audio for new anchor
+                self._generate_anchor_narration(new_anchor)
         
         # Update visual effects
         self.visual_stack.update(delta_time)
@@ -242,6 +278,101 @@ class BroadcastPipeline:
         self.state = BroadcastState.RUNNING
         
         self.logger.info("Transition complete, resuming normal coverage")
+        
+        # Generate narration for initial anchor
+        current_anchor = self.anchor_cycler.get_current_anchor()
+        self._generate_anchor_narration(current_anchor)
+    
+    def _generate_anchor_narration(self, anchor):
+        """
+        Generate narration audio and video loop for the current anchor.
+        
+        Args:
+            anchor: AnchorPersona instance
+        """
+        if not self.current_story:
+            return
+        
+        # Get perspective text for this anchor
+        perspective = self.anchor_cycler.get_perspective_text(self.current_story)
+        narration_text = perspective['text']
+        
+        # Check if narration has changed (to avoid regenerating audio)
+        if narration_text == self.last_narration_text:
+            self.logger.info("Narration text unchanged, skipping audio regeneration")
+            return
+        
+        # Log narration with timestamp and anchor name
+        self._log_narration(anchor.name, narration_text)
+        
+        # Generate TTS audio
+        try:
+            audio_path = self.tts.synthesize(
+                text=narration_text,
+                voice=anchor.name
+            )
+            self.current_audio_path = audio_path
+            self.logger.info(f"Generated TTS audio: {audio_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to generate TTS audio: {e}")
+            self.current_audio_path = None
+        
+        # Generate video loop with audio
+        try:
+            image_url = self.current_story.get('image_url')
+            # For now, we don't download the image, just pass the URL
+            # In production, you'd download it first
+            video_path = self.video_loop_generator.make_loop(
+                image_path=None,  # Will use test pattern
+                audio_path=self.current_audio_path
+            )
+            self.current_video_path = video_path
+            self.logger.info(f"Generated video loop: {video_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to generate video loop: {e}")
+            self.current_video_path = None
+        
+        # Update ticker with current context
+        self._update_ticker_for_anchor(anchor, narration_text)
+        
+        # Track this narration
+        self.last_narration_text = narration_text
+    
+    def _log_narration(self, anchor_name: str, text: str):
+        """
+        Log narration text to file with timestamp and anchor name.
+        
+        Args:
+            anchor_name: Name of the anchor
+            text: Narration text
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {anchor_name}: {text}\n"
+        
+        try:
+            with open(self.narration_log_path, 'a') as f:
+                f.write(log_entry)
+            self.logger.debug(f"Logged narration for {anchor_name}")
+        except Exception as e:
+            self.logger.error(f"Failed to log narration: {e}")
+    
+    def _update_ticker_for_anchor(self, anchor, narration_text: str):
+        """
+        Update ticker text to reflect current anchor perspective.
+        
+        Args:
+            anchor: AnchorPersona instance
+            narration_text: Current narration text
+        """
+        if not self.current_story:
+            return
+        
+        # Create ticker with breaking news + headline + current focus
+        story_title = self.current_story['title']
+        ticker_text = f"BREAKING: {story_title} • {anchor.focus.upper()}: {narration_text[:100]}..."
+        
+        self.visual_stack.set_ticker_text(ticker_text)
+        self.logger.debug(f"Updated ticker for {anchor.name}")
     
     def get_status(self) -> Dict:
         """
