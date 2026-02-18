@@ -1,75 +1,65 @@
-# Agente 24/7 Morning Show Configuration
-
-# RSS Feed Configuration
 rss:
-  url: "https://rss.example.com/feed.xml"  # Update with your RSS feed URL
-  polling_interval: 60  # seconds - how often to poll for new items
-  debounce_timeout: 5  # seconds - minimum time between story transitions
+  urls:
+  - https://feeds.bbci.co.uk/news/rss.xml
+  - https://rss.cnn.com/rss/edition.rss
+  polling_interval: 60
+  debounce_timeout: 5
 
-# Anchor Persona Configuration
 anchors:
   cycle_order:
-    - name: "Anchor A"
-      focus: "headline/facts"
-      perspective: "What happened and when"
-      color: "#FF0000"  # Red
-    - name: "Anchor B"
-      focus: "implications"
-      perspective: "Why it matters and what comes next"
-      color: "#0000FF"  # Blue
-    - name: "Anchor C"
-      focus: "context"
-      perspective: "Background and historical perspective"
-      color: "#00FF00"  # Green
-  rotation_interval: 30  # seconds - time each anchor speaks before cycling
+  - name: Anchor A
+    focus: headline/facts
+    perspective: What happened and when
+    color: '#FF0000'
+  - name: Anchor B
+    focus: implications
+    perspective: Why it matters and what comes next
+    color: '#0000FF'
+  - name: Anchor C
+    focus: context
+    perspective: Background and historical perspective
+    color: '#00FF00'
+  rotation_interval: 30
 
-# Visual Configuration (CNN-style)
 visuals:
   lower_third:
     enabled: true
     update_per_anchor: true
     height: 120
     font_size: 18
-  
   ticker:
     enabled: true
-    speed: 2  # pixels per frame
+    speed: 2
     height: 40
     font_size: 14
-  
   live_tag:
     enabled: true
-    position: "top-left"
+    position: top-left
     show_timestamp: true
     show_episode_id: true
-  
   story_image:
     pan_zoom_enabled: true
-    pan_speed: 0.5  # pixels per second
+    pan_speed: 0.5
     zoom_factor: 1.1
-    duration: 120  # seconds for full pan/zoom cycle
+    duration: 120
 
-# Broadcast Configuration
 broadcast:
   mode: "24/7"
-  breaking_news_transition_duration: 2  # seconds
-  default_story_duration: null  # null = event-driven (wait for new RSS item)
+  breaking_news_transition_duration: 2
+  default_story_duration: null
 
-# TTS Configuration
 tts:
-  cache_dir: "/tmp/tts_cache"
-  model: "en_US-lessac-medium"  # Piper model to use
+  model_path: "/home/remvelchio/agent/models/piper/en_US-lessac-medium.onnx"
+  config_path: "/home/remvelchio/agent/models/piper/en_US-lessac-medium.onnx.json"
+  cache_dir: "/home/remvelchio/agent/tmp/audio"
 
-# Video Loop Configuration
 video:
-  output_dir: "/tmp/video_loops"
-  default_duration: 30  # seconds
+  output_dir: "/home/remvelchio/agent/tmp/video"
+  default_duration: 6
 
-# Narration Logging Configuration
 narration:
   log_path: "/home/remvelchio/agent/tmp/scripts/narration.log"
-  
-# Logging
+
 logging:
-  level: "INFO"
-  file: "agente.log"
+  level: INFO
+  file: /home/remvelchio/agent/logs/agente.log

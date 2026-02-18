@@ -8,83 +8,103 @@ and implementing debouncing logic to prevent rapid story switching.
 import feedparser
 import time
 import logging
-from typing import Optional, Dict, List
-from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Union
+from datetime import datetime
 
 
 class RSSMonitor:
     """
-    Monitors an RSS feed for new items with debouncing.
-    
+    Monitors one or more RSS feeds for new items with debouncing.
+
     Implements event-driven behavior where new RSS items trigger
     story updates, with debouncing to prevent rapid switching.
     """
-    
-    def __init__(self, feed_url: str, polling_interval: int = 60, 
+
+    def __init__(self, feed_urls: Union[str, List[str]], polling_interval: int = 60,
                  debounce_timeout: int = 5):
         """
         Initialize the RSS monitor.
-        
+
         Args:
-            feed_url: URL of the RSS feed to monitor
+            feed_urls: URL or list of URLs of RSS feeds to monitor
             polling_interval: Seconds between feed checks
             debounce_timeout: Minimum seconds between story transitions
         """
-        self.feed_url = feed_url
+        self.feed_urls = self._normalize_urls(feed_urls)
         self.polling_interval = polling_interval
         self.debounce_timeout = debounce_timeout
         self.logger = logging.getLogger(__name__)
-        
+
         # State tracking
         self.last_story_guid: Optional[str] = None
         self.last_update_time: Optional[datetime] = None
         self.current_story: Optional[Dict] = None
         self.pending_story: Optional[Dict] = None
-        
+
+    def _normalize_urls(self, feed_urls: Union[str, List[str]]) -> List[str]:
+        if isinstance(feed_urls, str):
+            return [feed_urls]
+        if isinstance(feed_urls, list):
+            return [u for u in feed_urls if u]
+        return []
+
+    def _entry_timestamp(self, entry: Dict) -> float:
+        if entry.get('published_parsed'):
+            return time.mktime(entry.published_parsed)
+        if entry.get('updated_parsed'):
+            return time.mktime(entry.updated_parsed)
+        return time.time()
+
     def poll_feed(self) -> Optional[Dict]:
         """
-        Poll the RSS feed for updates.
-        
+        Poll all RSS feeds for updates.
+
         Returns:
             Latest story dict if new item found, None otherwise
         """
         try:
-            self.logger.info(f"Polling RSS feed: {self.feed_url}")
-            feed = feedparser.parse(self.feed_url)
-            
-            if not feed.entries:
-                self.logger.warning("No entries found in feed")
+            if not self.feed_urls:
+                self.logger.warning("No RSS feed URLs configured")
                 return None
-            
-            latest_entry = feed.entries[0]
+
+            latest_entry = None
+            latest_time = 0.0
+
+            for url in self.feed_urls:
+                self.logger.info(f"Polling RSS feed: {url}")
+                feed = feedparser.parse(url)
+                if not feed.entries:
+                    self.logger.warning(f"No entries found in feed: {url}")
+                    continue
+
+                entry = feed.entries[0]
+                entry_time = self._entry_timestamp(entry)
+                if entry_time > latest_time:
+                    latest_time = entry_time
+                    latest_entry = entry
+
+            if not latest_entry:
+                return None
+
             latest_guid = latest_entry.get('id') or latest_entry.get('link')
-            
-            # Check if this is a new story
+
             if latest_guid != self.last_story_guid:
                 story = self._parse_entry(latest_entry)
                 self.logger.info(f"New story detected: {story['title']}")
                 return story
-            
+
             return None
-            
+
         except Exception as e:
-            self.logger.error(f"Error polling RSS feed: {e}")
+            self.logger.error(f"Error polling RSS feeds: {e}")
             return None
-    
+
     def check_for_update(self) -> Optional[Dict]:
-        """
-        Check for new story update with debouncing.
-        
-        Returns:
-            New story if available and debounce period has passed,
-            None otherwise
-        """
         new_story = self.poll_feed()
-        
+
         if new_story is None:
             return None
-        
-        # Check debounce timeout
+
         now = datetime.now()
         if self.last_update_time:
             time_since_last = (now - self.last_update_time).total_seconds()
@@ -93,83 +113,42 @@ class RSSMonitor:
                     f"Debouncing: {time_since_last:.1f}s since last update "
                     f"(minimum: {self.debounce_timeout}s)"
                 )
-                # Store as pending
                 self.pending_story = new_story
                 return None
-        
-        # Update is ready
+
         self.last_story_guid = new_story['guid']
         self.last_update_time = now
         self.current_story = new_story
         self.pending_story = None
-        
+
         return new_story
-    
+
     def has_pending_story(self) -> bool:
-        """Check if there's a pending story waiting for debounce."""
         return self.pending_story is not None
-    
+
     def get_pending_story(self) -> Optional[Dict]:
-        """
-        Get pending story if debounce period has passed.
-        
-        Returns:
-            Pending story if ready, None otherwise
-        """
         if not self.pending_story:
             return None
-        
+
         now = datetime.now()
         if self.last_update_time:
             time_since_last = (now - self.last_update_time).total_seconds()
             if time_since_last >= self.debounce_timeout:
                 story = self.pending_story
+                self.pending_story = None
                 self.last_story_guid = story['guid']
                 self.last_update_time = now
                 self.current_story = story
-                self.pending_story = None
                 return story
-        
+
         return None
-    
-    def _parse_entry(self, entry) -> Dict:
-        """
-        Parse an RSS entry into a standardized story format.
-        
-        Args:
-            entry: feedparser entry object
-            
-        Returns:
-            Dictionary with story information
-        """
+
+    def _parse_entry(self, entry: Dict) -> Dict:
         return {
             'guid': entry.get('id') or entry.get('link'),
             'title': entry.get('title', 'Untitled'),
             'summary': entry.get('summary', ''),
             'link': entry.get('link', ''),
             'published': entry.get('published', ''),
-            'published_parsed': entry.get('published_parsed'),
-            'image_url': self._extract_image_url(entry),
-            'timestamp': datetime.now().isoformat()
+            'source': entry.get('source', {}).get('title', 'Unknown')
         }
-    
-    def _extract_image_url(self, entry) -> Optional[str]:
-        """Extract image URL from RSS entry."""
-        # Try media:content
-        if hasattr(entry, 'media_content'):
-            for media in entry.media_content:
-                if media.get('type', '').startswith('image/'):
-                    return media.get('url')
-        
-        # Try enclosures
-        if hasattr(entry, 'enclosures'):
-            for enclosure in entry.enclosures:
-                if enclosure.get('type', '').startswith('image/'):
-                    return enclosure.get('href')
-        
-        # Try media:thumbnail
-        if hasattr(entry, 'media_thumbnail'):
-            if entry.media_thumbnail:
-                return entry.media_thumbnail[0].get('url')
-        
-        return None

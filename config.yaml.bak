@@ -1,0 +1,61 @@
+# Agente 24/7 Morning Show Configuration
+
+# RSS Feed Configuration
+rss:
+  url: "https://rss.example.com/feed.xml"  # Update with your RSS feed URL
+  polling_interval: 60  # seconds - how often to poll for new items
+  debounce_timeout: 5  # seconds - minimum time between story transitions
+
+# Anchor Persona Configuration
+anchors:
+  cycle_order:
+    - name: "Anchor A"
+      focus: "headline/facts"
+      perspective: "What happened and when"
+      color: "#FF0000"  # Red
+    - name: "Anchor B"
+      focus: "implications"
+      perspective: "Why it matters and what comes next"
+      color: "#0000FF"  # Blue
+    - name: "Anchor C"
+      focus: "context"
+      perspective: "Background and historical perspective"
+      color: "#00FF00"  # Green
+  rotation_interval: 30  # seconds - time each anchor speaks before cycling
+
+# Visual Configuration (CNN-style)
+visuals:
+  lower_third:
+    enabled: true
+    update_per_anchor: true
+    height: 120
+    font_size: 18
+  
+  ticker:
+    enabled: true
+    speed: 2  # pixels per frame
+    height: 40
+    font_size: 14
+  
+  live_tag:
+    enabled: true
+    position: "top-left"
+    show_timestamp: true
+    show_episode_id: true
+  
+  story_image:
+    pan_zoom_enabled: true
+    pan_speed: 0.5  # pixels per second
+    zoom_factor: 1.1
+    duration: 120  # seconds for full pan/zoom cycle
+
+# Broadcast Configuration
+broadcast:
+  mode: "24/7"
+  breaking_news_transition_duration: 2  # seconds
+  default_story_duration: null  # null = event-driven (wait for new RSS item)
+  
+# Logging
+logging:
+  level: "INFO"
+  file: "agente.log"

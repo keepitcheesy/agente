@@ -6,17 +6,23 @@ each anchor provides a different perspective on the current story.
 """
 
 import logging
+import os
+import json
+import urllib.request
+import urllib.error
+import random
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
+from safe_search import get_policy_context, is_sensitive_topic
 
 
 class AnchorPersona:
     """Represents a single anchor with their unique perspective."""
-    
+
     def __init__(self, name: str, focus: str, perspective: str, color: str):
         """
         Initialize an anchor persona.
-        
+
         Args:
             name: Anchor identifier (e.g., "Anchor A")
             focus: What this anchor focuses on (e.g., "headline/facts")
@@ -27,14 +33,14 @@ class AnchorPersona:
         self.focus = focus
         self.perspective = perspective
         self.color = color
-    
+
     def get_lower_third_text(self, story_title: str) -> Dict[str, str]:
         """
         Generate lower third text for this anchor.
-        
+
         Args:
             story_title: Current story title
-            
+
         Returns:
             Dictionary with lower third display information
         """
@@ -44,7 +50,7 @@ class AnchorPersona:
             'story': story_title,
             'color': self.color
         }
-    
+
     def __repr__(self):
         return f"AnchorPersona({self.name}, focus={self.focus})"
 
@@ -52,22 +58,22 @@ class AnchorPersona:
 class AnchorCycler:
     """
     Manages cycling through anchor personas for each story.
-    
+
     Implements continuous rotation through perspectives A, B, C
     until a new story arrives.
     """
-    
+
     def __init__(self, anchors_config: List[Dict], rotation_interval: int = 30):
         """
         Initialize the anchor cycler.
-        
+
         Args:
             anchors_config: List of anchor configuration dicts
             rotation_interval: Seconds each anchor speaks before cycling
         """
         self.rotation_interval = rotation_interval
         self.logger = logging.getLogger(__name__)
-        
+
         # Create anchor personas
         self.anchors = [
             AnchorPersona(
@@ -78,17 +84,24 @@ class AnchorCycler:
             )
             for config in anchors_config
         ]
-        
+
         # State tracking
         self.current_anchor_index = 0
         self.last_rotation_time: Optional[datetime] = None
         self.current_story_guid: Optional[str] = None
         self.rotation_count = 0
-    
+        self.current_commentary = None
+        self.last_rotation_for_commentary = None
+
+        # Memory
+        self.story_memory = []
+        self.social_memory = {}
+        self.last_pair_stances = []
+
     def start_story(self, story_guid: str):
         """
         Start covering a new story.
-        
+
         Args:
             story_guid: Unique identifier for the story
         """
@@ -96,36 +109,40 @@ class AnchorCycler:
         self.current_anchor_index = 0  # Start with Anchor A
         self.last_rotation_time = datetime.now()
         self.rotation_count = 0
+        self.current_commentary = None
+        self.last_rotation_for_commentary = None
+        self.story_memory = []
+        self.last_pair_stances = []
         self.logger.info(
             f"Started new story coverage: {story_guid} with {self.anchors[0].name}"
         )
-    
+
     def get_current_anchor(self) -> AnchorPersona:
         """
         Get the currently active anchor.
-        
+
         Returns:
             Current AnchorPersona instance
         """
         return self.anchors[self.current_anchor_index]
-    
+
     def should_rotate(self) -> bool:
         """
         Check if it's time to rotate to the next anchor.
-        
+
         Returns:
             True if rotation interval has passed, False otherwise
         """
         if not self.last_rotation_time:
             return False
-        
+
         elapsed = (datetime.now() - self.last_rotation_time).total_seconds()
         return elapsed >= self.rotation_interval
-    
+
     def rotate(self) -> AnchorPersona:
         """
         Rotate to the next anchor in the cycle.
-        
+
         Returns:
             The new current AnchorPersona
         """
@@ -133,76 +150,182 @@ class AnchorCycler:
         self.current_anchor_index = (self.current_anchor_index + 1) % len(self.anchors)
         self.last_rotation_time = datetime.now()
         self.rotation_count += 1
-        
+
         current_anchor = self.anchors[self.current_anchor_index]
         self.logger.info(
             f"Rotated to {current_anchor.name} "
             f"(rotation #{self.rotation_count})"
         )
-        
+
         return current_anchor
-    
+
     def update(self) -> Optional[AnchorPersona]:
         """
         Update anchor state, rotating if necessary.
-        
+
         Returns:
             New anchor if rotation occurred, None otherwise
         """
         if self.should_rotate():
             return self.rotate()
         return None
-    
+
     def get_perspective_text(self, story: Dict) -> Dict[str, str]:
         """
-        Generate perspective text for the current anchor.
-        
-        Args:
-            story: Story dictionary with title, summary, etc.
-            
-        Returns:
-            Dictionary with anchor-specific perspective text
+        Generate anchor commentary once per rotation with memory + synthesis.
         """
         anchor = self.get_current_anchor()
-        
-        # Generate perspective-specific content
-        if "headline/facts" in anchor.focus:
-            text = self._generate_headline_perspective(story)
-        elif "implications" in anchor.focus:
-            text = self._generate_implications_perspective(story)
-        elif "context" in anchor.focus:
-            text = self._generate_context_perspective(story)
-        else:
-            text = story.get('summary', '')
-        
+
+        if self.last_rotation_for_commentary == self.rotation_count and self.current_commentary:
+            return {
+                'anchor': anchor.name,
+                'focus': anchor.focus,
+                'text': self.current_commentary,
+                'perspective': anchor.perspective
+            }
+
+        stance = self._pick_stance(anchor.name)
+        prev_summary = self._summarize_last_take()
+        synthesize = self._detect_disagreement_loop()
+
+        text_blob = f"{story.get('title','')} {story.get('summary','')}"
+        sensitive = is_sensitive_topic(text_blob)
+        context_lines = get_policy_context(story.get('title',''), story.get('summary',''))
+
+        llm_text = self._generate_llm_commentary(story, anchor, stance, prev_summary, synthesize, context_lines, sensitive)
+
+        if not llm_text:
+            llm_text = story.get('summary', story.get('title', ''))
+
+        if prev_summary:
+            last_anchor = self.story_memory[-1]["anchor"]
+            self._update_social_memory(anchor.name, last_anchor, "disagree" if stance == "disagree" else "agree")
+            pair = tuple(sorted([anchor.name, last_anchor]))
+            self.last_pair_stances.append({"pair": pair, "stance": "disagree" if stance == "disagree" else "agree"})
+            self.last_pair_stances = self.last_pair_stances[-4:]
+
+        self._update_story_memory(anchor.name, stance, llm_text)
+
+        self.current_commentary = llm_text
+        self.last_rotation_for_commentary = self.rotation_count
+
         return {
             'anchor': anchor.name,
             'focus': anchor.focus,
-            'text': text,
+            'text': llm_text,
             'perspective': anchor.perspective
         }
-    
+
+    def _update_story_memory(self, anchor_name, stance, text, max_len=7):
+        self.story_memory.append({"anchor": anchor_name, "stance": stance, "text": text})
+        if len(self.story_memory) > max_len:
+            self.story_memory = self.story_memory[-max_len:]
+
+    def _update_social_memory(self, speaker, target, stance):
+        key = (speaker, target)
+        mem = self.social_memory.get(key, {"agree": 0, "disagree": 0, "trust": 0})
+        if stance == "agree":
+            mem["agree"] += 1
+            mem["trust"] += 1
+        elif stance == "disagree":
+            mem["disagree"] += 1
+            mem["trust"] -= 1
+        self.social_memory[key] = mem
+
+    def _detect_disagreement_loop(self):
+        recent = self.last_pair_stances[-2:]
+        return len(recent) == 2 and all(s["stance"] == "disagree" for s in recent) and recent[0]["pair"] == recent[1]["pair"]
+
+    def _summarize_last_take(self):
+        if not self.story_memory:
+            return None
+        return self.story_memory[-1]["text"].split(".")[0].strip() + "."
+
+    def _pick_stance(self, anchor_name):
+        if not self.story_memory:
+            return "thesis"
+        last = self.story_memory[-1]["anchor"]
+        mem = self.social_memory.get((anchor_name, last), {"agree": 0, "disagree": 0, "trust": 0})
+        return "disagree" if mem["trust"] < 0 else "agree"
+
+    def _generate_llm_commentary(self, story: Dict, anchor: "AnchorPersona", stance: str, prev_summary: str, synthesize: bool, context_lines: list, sensitive: bool) -> str:
+        model = os.environ.get("OLLAMA_MODEL", "mistral:latest")
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        timeout = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
+
+        archetypes = {
+            "Anchor A": "hylic: focus on constraints, costs, logistics",
+            "Anchor B": "psychic: focus on narrative, perception, myth",
+            "Anchor C": "pneumatic: focus on systems, long-range consequences"
+        }
+        persona = archetypes.get(anchor.name, anchor.perspective)
+
+        if synthesize:
+            instruction = "Synthesize the prior two positions in one sentence."
+        elif stance == "disagree":
+            instruction = "Disagree with the prior anchor, briefly."
+        elif stance == "agree":
+            instruction = "Agree with the prior anchor, briefly."
+        else:
+            instruction = "Offer a fresh thesis."
+
+        prompt = (
+            f"You are {anchor.name}, a fast TV news anchor. "
+            f"Persona: {persona}. "
+            f"Always read the headline verbatim first. Exactly 2 sentences. End with a period. "
+            f"Then respond to the previous anchor: {prev_summary or 'none'}. "
+            f"{instruction} "
+            f"Headline: {story.get('title','')}. "
+        )
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": "5m",
+            "options": {
+                "num_predict": 180,
+                "temperature": 1.2,
+                "top_p": 0.9,
+                "repeat_penalty": 1.1
+            }
+        }
+
+        try:
+            req = urllib.request.Request(
+                f"{host}/api/generate",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.load(resp)
+            text = data.get("response", "").strip()
+            return text if text else None
+        except Exception as exc:
+            self.logger.warning("LLM commentary failed: %s", exc)
+            return None
+
     def _generate_headline_perspective(self, story: Dict) -> str:
         """Generate headline/facts focused text."""
         return (
             f"Here's what happened: {story['title']}. "
             f"{story.get('summary', '')[:200]}"
         )
-    
+
     def _generate_implications_perspective(self, story: Dict) -> str:
         """Generate implications focused text."""
         return (
             f"Why this matters: {story['title']} could have significant impacts. "
             f"Looking at what comes next..."
         )
-    
+
     def _generate_context_perspective(self, story: Dict) -> str:
         """Generate context focused text."""
         return (
             f"For context on {story['title']}: "
             f"This story builds on recent developments..."
         )
-    
+
     def get_stats(self) -> Dict:
         """Get statistics about the current coverage."""
         return {
