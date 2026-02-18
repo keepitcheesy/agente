@@ -64,8 +64,8 @@ class VideoLoopGenerator:
         # Generate output path if not provided
         if output_path is None:
             import hashlib
-            import time
-            key = f"{image_path}|{audio_path}|{duration}|{time.time()}"
+            # Create cache key from inputs (without time.time() for proper caching)
+            key = f"{image_path}|{audio_path}|{duration}"
             filename = hashlib.md5(key.encode()).hexdigest() + ".mp4"
             output_path = str(self.output_dir / filename)
         

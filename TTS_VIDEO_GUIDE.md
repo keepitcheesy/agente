@@ -119,8 +119,9 @@ sudo apt-get update
 sudo apt-get install -y ffmpeg
 
 # Install Piper TTS
-# See: https://github.com/rhasspy/piper
-wget https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz
+# See: https://github.com/rhasspy/piper for latest releases
+# Example installation (check releases page for latest version):
+wget https://github.com/rhasspy/piper/releases/latest/download/piper_amd64.tar.gz
 tar xzf piper_amd64.tar.gz
 sudo mv piper /usr/local/bin/
 ```
