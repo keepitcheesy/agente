@@ -194,6 +194,12 @@ class BroadcastPipeline:
             if new_anchor:
                 self.stats['anchor_rotations'] += 1
                 self.logger.info(f"Anchor rotated to: {new_anchor.name}")
+
+                narration = new_anchor.get_narration(self.current_story['title'])
+                if narration and narration != self.last_narration_text:
+                    self.last_narration_text = narration
+                    self._log_narration(new_anchor.name, narration)
+                    self.current_audio_path = self.tts.synthesize(narration)
                 
                 # Generate narration text and audio for new anchor
                 self._generate_anchor_narration(new_anchor)
