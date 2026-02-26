@@ -304,7 +304,7 @@ class AnchorCycler:
         wire_text = (story.get("title","") + " " + story.get("summary","")).strip()
         is_vance = anchor.name == "Anchor A"
         is_responder = anchor.name in ("Anchor B", "Anchor C", "Anchor D", "Anchor E")
-        is_synthesis = self.phase == "synthesis"
+        is_synthesis = self.phase in ("synthesis", "roundtable") and anchor.name == "Anchor E"
 
         if EIGENTRACE_AVAILABLE:
             if is_vance and self.last_vance_text:
