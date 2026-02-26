@@ -13,3 +13,9 @@ ENV/
 .vscode/
 *.swp
 *.swo
+tmp/
+mastodon/outbox/
+*.wav
+*.mp4
+*.png
+*.jsonl
