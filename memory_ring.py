@@ -25,10 +25,63 @@ import time
 import logging
 from typing import Optional, Dict, Tuple
 
+
+_STOP = {
+    "the","a","an","and","or","to","of","in","on","for","with","at","by","from",
+    "as","is","are","was","were","be","been","it","this","that","these","those",
+    "but","not","into","over","after","before","about","than","then","so","if",
+    "we","you","they","he","she","i","our","their","its","amid","past","above"
+}
+
+def _norm(x: str) -> str:
+    x = (x or "").strip().lower()
+    x = re.sub(r"https?://\S+", " ", x)
+    x = re.sub(r"[^a-z0-9\-\s]", " ", x)
+    x = re.sub(r"\s+", " ", x)
+    return x
+
+def _keywords(x: str):
+    x = _norm(x)
+    toks = [t for t in x.split() if t and t not in _STOP]
+    # keep numbers + tickers + acronyms like "100k", "gpt-5", "f-35"
+    return toks
+
+
+import difflib
+
+_UPDATE_HINTS = (
+    "live", "update", "updates", "developing", "breaking", "latest", "as it happens",
+    "minute", "minutes", "hour", "hours", "today", "just in"
+)
+
+def _is_update_like(title: str, summary: str = "") -> bool:
+    blob = f"{_norm(title)} {_norm(summary)}"
+    return any(h in blob for h in _UPDATE_HINTS)
+
+def _title_similarity(a: str, b: str) -> float:
+    # difflib is conservative but extremely useful for headline paraphrases
+    a = _norm(a)
+    b = _norm(b)
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(a=a, b=b).ratio()
+
+def _token_jaccard(a: str, b: str) -> float:
+    ta = set(_keywords(a))
+    tb = set(_keywords(b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, len(ta | tb))
+
+def _semantic_score(title_a: str, title_b: str) -> float:
+    # Combined: catch paraphrases AND shared-entity headlines
+    return max(_title_similarity(title_a, title_b), _token_jaccard(title_a, title_b))
+
 logger = logging.getLogger(__name__)
 
 CACHE_PATH = "/home/remvelchio/agent/tmp/seen_stories.json"
 TTL_SECONDS = 48 * 3600  # 48 hours
+SEMANTIC_ENABLED = False  # GUID-only mode
 
 
 def _load_cache() -> Dict:
@@ -221,7 +274,11 @@ def is_duplicate(guid: str, title: str) -> Tuple[bool, str]:
         age_hours = (now - cache["guids"][guid]) / 3600
         return True, f"guid_seen_{age_hours:.1f}h_ago"
 
-    # Layer 2: Three-signal semantic dedup
+    
+    if not SEMANTIC_ENABLED:
+        return False, "new"
+
+# Layer 2: Three-signal semantic dedup
     norm_title = _normalize_title(title)
     if len(norm_title) > 10:
         best_fused = 0.0
@@ -347,3 +404,18 @@ if __name__ == "__main__":
     if os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
         print("\nTest cache cleaned up.")
+
+
+# Default: catch obvious rewrites, but do not suppress live updates
+SEMANTIC_DUP_THRESHOLD = 0.72  # for SequenceMatcher
+SEMANTIC_JACCARD_FLOOR = 0.22  # for token overlap
+
+
+def is_semantic_duplicate(title_a: str, title_b: str, summary_a: str = "", summary_b: str = "") -> bool:
+    # Never block update-like headlines (war/earthquake/live blog updates)
+    if _is_update_like(title_a, summary_a) or _is_update_like(title_b, summary_b):
+        return False
+    sim = _title_similarity(title_a, title_b)
+    jac = _token_jaccard(title_a, title_b)
+    return (sim >= SEMANTIC_DUP_THRESHOLD) or (jac >= SEMANTIC_JACCARD_FLOOR)
+

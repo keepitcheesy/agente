@@ -12,6 +12,44 @@ from typing import Optional, Dict, List, Union
 from datetime import datetime
 
 
+import hashlib
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+
+_TRACKING_KEYS = {
+    "utm_source","utm_medium","utm_campaign","utm_term","utm_content",
+    "utm_id","gclid","fbclid","mc_cid","mc_eid","ref","ref_src"
+}
+
+def canonicalize_url(url: str) -> str:
+    if not url:
+        return ""
+    u = url.strip()
+    try:
+        p = urlparse(u)
+        scheme = (p.scheme or "https").lower()
+        netloc = (p.netloc or "").lower()
+        path = p.path or ""
+        q = [(k, v) for (k, v) in parse_qsl(p.query, keep_blank_values=True) if k.lower() not in _TRACKING_KEYS]
+        query = urlencode(q, doseq=True)
+        return urlunparse((scheme, netloc, path, "", query, ""))  # drop fragment
+    except Exception:
+        return u
+
+def compute_guid(entry: dict) -> str:
+    guid = (entry.get("guid") or entry.get("id") or "").strip()
+    if guid:
+        return guid
+
+    link = canonicalize_url((entry.get("link") or "").strip())
+    if link:
+        return link
+
+    title = (entry.get("title") or "").strip()
+    published = (entry.get("published") or entry.get("updated") or "").strip()
+    blob = (title + "|" + published).encode("utf-8", errors="ignore")
+    return "hash:" + hashlib.sha1(blob).hexdigest()
+
+
 class RSSMonitor:
     """
     Monitors one or more RSS feeds for new items with debouncing.
@@ -170,7 +208,7 @@ class RSSMonitor:
 
     def _parse_entry(self, entry: Dict) -> Dict:
         return {
-            'guid': entry.get('id') or entry.get('link'),
+            'guid': compute_guid(entry),
             'title': entry.get('title', 'Untitled'),
             'summary': entry.get('summary', ''),
             'link': entry.get('link', ''),
