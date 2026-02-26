@@ -12,7 +12,9 @@ class ImageGenerator:
             "stabilityai/sdxl-turbo",
             torch_dtype=torch.float16,
             variant="fp16",
-        ).to(self.device)
+        )
+        # Offload to CPU between generations - frees ~10GB VRAM for Ollama
+        self.pipe.enable_model_cpu_offload()
 
     def _cleanup_old(self, max_age_hours: int = 24):
         cutoff = time.time() - max_age_hours * 3600
