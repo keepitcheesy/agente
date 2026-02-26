@@ -15,6 +15,12 @@ import random
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from safe_search import get_policy_context, is_sensitive_topic
+from concurrent.futures import ThreadPoolExecutor
+try:
+    import eigentrace
+    EIGENTRACE_AVAILABLE = True
+except ImportError:
+    EIGENTRACE_AVAILABLE = False
 
 
 class AnchorPersona:
@@ -105,6 +111,13 @@ class AnchorCycler:
         self.story_memory = []
         self.social_memory = {}
         self.last_pair_stances = []
+
+        # EigenTrace state
+        self.last_vance_metrics = None
+        self.last_vance_text = None
+        self.last_wire_text = None
+        self.last_ddg_report = None
+        self._ddg_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ddg")
 
     def start_story(self, story_guid: str):
         """
@@ -287,6 +300,112 @@ class AnchorCycler:
 
     def _generate_llm_commentary(self, story: Dict, anchor: "AnchorPersona", stance: str, prev_summary: str, synthesize: bool, context_lines: list, sensitive: bool) -> str:
         model = os.environ.get("OLLAMA_MODEL", "mistral:latest")
+        # EigenTrace integration
+        wire_text = (story.get("title","") + " " + story.get("summary","")).strip()
+        is_vance = anchor.name == "Anchor A"
+        is_responder = anchor.name in ("Anchor B", "Anchor C", "Anchor D", "Anchor E")
+        is_synthesis = self.phase == "synthesis"
+
+        if EIGENTRACE_AVAILABLE:
+            if is_vance and self.last_vance_text:
+                result = eigentrace.analyze(self.last_vance_text, model, "Anchor A")
+                if result:
+                    self.last_vance_metrics = result.metrics
+                    self.last_wire_text = wire_text
+                    title = story.get("title", "")
+                    vance_snap = self.last_vance_text
+                    def _run_ddg(t, v):
+                        try:
+                            return eigentrace.ddg_research_desk(t, v)
+                        except Exception:
+                            return "RESEARCH DESK: offline."
+                    self._ddg_future = self._ddg_executor.submit(_run_ddg, title, vance_snap)
+
+            if is_responder and self.last_vance_metrics is not None:
+                ddg_report = "RESEARCH DESK: pending."
+                if hasattr(self, "_ddg_future"):
+                    try:
+                        ddg_report = self._ddg_future.result(timeout=0.1)
+                        self.last_ddg_report = ddg_report
+                    except Exception:
+                        ddg_report = self.last_ddg_report or "RESEARCH DESK: pending."
+                prior_exchange = " | ".join([
+                    m["anchor"] + ": " + m["text"][:80]
+                    for m in self.story_memory[-3:]
+                    if m["anchor"] != anchor.name
+                ])
+                eigenprompt = eigentrace.build_response_prompt(
+                    anchor.name,
+                    self.last_wire_text or wire_text,
+                    self.last_vance_text or "",
+                    self.last_vance_metrics,
+                    ddg_report,
+                    prior_exchange
+                )
+                prompt = (
+                    eigenprompt + "\n\n"
+                    "BROADCAST FORMAT RULES:\n"
+                    "- Write 8-12 short sentences in one paragraph.\n"
+                    "- Keep sentences under 16 words.\n"
+                    "- End with: And that is the setup -- back to you.\n"
+                    "- Do NOT include your name or labels in the output.\n"
+                    "- No repetition of what other anchors already said.\n"
+                )
+                _host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+                _timeout = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
+                _payload = {
+                    "model": model, "prompt": prompt, "stream": False, "keep_alive": "5m",
+                    "options": {"num_predict": 280, "temperature": 1.2, "top_p": 0.92, "repeat_penalty": 1.1}
+                }
+                try:
+                    _req = urllib.request.Request(
+                        _host + "/api/generate",
+                        data=json.dumps(_payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    with urllib.request.urlopen(_req, timeout=_timeout) as _resp:
+                        _data = json.load(_resp)
+                    _text = _data.get("response", "").strip()
+                    if _text:
+                        _text = re.sub(r"^(Anchor\s+[A-Z]:\s*)", "", _text, flags=re.IGNORECASE).strip()
+                        _text = re.sub(r"^(Anchor\s+[A-Z]\s+here\.?\s*)", "", _text, flags=re.IGNORECASE).strip()
+                        _text = re.sub(r"(Headline:|Summary:|Source:|Extra context URLs:).*", "", _text, flags=re.IGNORECASE|re.DOTALL).strip()
+                        return _text
+                except Exception as _exc:
+                    self.logger.warning("EigenTrace responder path failed: %s", _exc)
+
+            if is_synthesis and self.last_vance_metrics is not None and self.last_vance_text:
+                full_exchange = " | ".join([
+                    m["anchor"] + ": " + m["text"][:100]
+                    for m in self.story_memory[-6:]
+                ])
+                synth_prompt = eigentrace.build_synthesis_prompt(
+                    self.last_wire_text or wire_text,
+                    self.last_vance_text,
+                    full_exchange,
+                    self.last_vance_metrics
+                )
+                _host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+                _timeout = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
+                _payload = {
+                    "model": model, "prompt": synth_prompt, "stream": False, "keep_alive": "5m",
+                    "options": {"num_predict": 120, "temperature": 0.7, "top_p": 0.9}
+                }
+                try:
+                    _req = urllib.request.Request(
+                        _host + "/api/generate",
+                        data=json.dumps(_payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    with urllib.request.urlopen(_req, timeout=_timeout) as _resp:
+                        _data = json.load(_resp)
+                    _text = _data.get("response", "").strip()
+                    if _text:
+                        return _text
+                except Exception as _exc:
+                    self.logger.warning("EigenTrace synthesis path failed: %s", _exc)
+        # end EigenTrace
+
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         timeout = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
 
@@ -397,6 +516,8 @@ class AnchorCycler:
             # Normalize whitespace but keep paragraph breaks
             text = re.sub(r"\n\s*\n", "\n\n", text)
             text = re.sub(r"[ \t]+", " ", text)
+            if EIGENTRACE_AVAILABLE and anchor.name == "Anchor A":
+                self.last_vance_text = text.strip()
             return text.strip()
         except Exception as exc:
             self.logger.warning("LLM commentary failed: %s", exc)
