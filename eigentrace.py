@@ -392,30 +392,27 @@ if __name__ == "__main__":
     print("\n" + "=" * 64)
 
 def compute_trace_metrics(text: str) -> dict:
-    """Score a narration text using spectral entropy and z-pinch logic.
-    Returns dict with keys: status, spectral_entropy, pulse_variance, pulse_range, reason.
-    """
-    import math
+    """Score narration text using spectral entropy and z-pinch logic."""
     try:
         words = text.split()
         if len(words) < 5:
             return {"status": "GIBBERISH", "spectral_entropy": 0.0,
                     "pulse_variance": 0.0, "pulse_range": 0.0,
                     "reason": "too short"}
-        # Compute surprisal proxy: normalised word-length entropy
         lengths = [len(w) for w in words]
         mean_l = sum(lengths) / len(lengths)
         surprisal = [abs(l - mean_l) / (mean_l + 1e-9) for l in lengths]
-        se = _spectral_entropy(surprisal)
-        pinched = _z_pinch(surprisal)
-        pv = sum((x - (sum(pinched)/(len(pinched)+1e-9)))**2
-                 for x in pinched) / (len(pinched) + 1e-9)
-        pr = max(pinched) - min(pinched) if pinched else 0.0
-        # Verdict thresholds
+        se, _dom_freq = _spectral_entropy(surprisal)  # returns (se, dominant_freq)
+        has_spike = _z_pinch(surprisal)               # returns bool
+        mean_s = sum(surprisal) / len(surprisal)
+        pv = sum((x - mean_s) ** 2 for x in surprisal) / len(surprisal)
+        pr = max(surprisal) - min(surprisal)
         if se < 0.1 or pr < 0.01:
             status, reason = "GIBBERISH", "flat signal"
         elif se > 3.5 or pv > 1.2:
             status, reason = "SLOP", "high entropy / incoherent"
+        elif not has_spike and pv < 0.02:
+            status, reason = "SLOP", "flat_rhythm"
         else:
             status, reason = "PUBLISHABLE", "within normal range"
         return {"status": status, "spectral_entropy": round(se, 6),
@@ -425,7 +422,6 @@ def compute_trace_metrics(text: str) -> dict:
         return {"status": "ARCHIVE", "spectral_entropy": 0.0,
                 "pulse_variance": 0.0, "pulse_range": 0.0,
                 "reason": str(exc)}
-
 
 def log_telemetry(anchor_name: str, story_title: str, text: str, metrics: dict) -> dict:
     """Write a telemetry entry to eigentrace_telemetry.jsonl and return it."""
