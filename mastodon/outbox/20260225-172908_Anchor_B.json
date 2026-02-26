@@ -1,0 +1,15 @@
+{
+  "anchor": "Anchor B",
+  "story_title": "How the new Galaxy S26 phones stack up against each other on paper",
+  "text": "While the Galaxy S26 lineup may boast improved hardware, let's not be blinded by tech specs alone. The real test lies in how these phones fare in everyday use. As history shows us from the 90s and 2000s tech busts, a powerful chipset doesn't always guarantee a perfect user experience. It remains to be seen whether these enhancements translate into something truly remarkable or just another overhyped iteration. And that's the setup \u2014 back to you.",
+  "metrics": {
+    "pulse_mean": 3.6497,
+    "pulse_variance": 0.0612,
+    "pulse_range": 1.1837,
+    "spectral_entropy": 0.5921,
+    "jaccard_max": 0.0769,
+    "status": "PUBLISHABLE",
+    "reason": "pink_noise_resonance"
+  },
+  "timestamp": "2026-02-25T22:29:08.853381+00:00"
+}

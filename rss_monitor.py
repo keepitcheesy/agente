@@ -37,9 +37,11 @@ class RSSMonitor:
 
         # State tracking
         self.last_story_guid: Optional[str] = None
+        self.seen_guids: set = set()
         self.last_update_time: Optional[datetime] = None
         self.current_story: Optional[Dict] = None
         self.pending_story: Optional[Dict] = None
+        self.last_accepted_timestamp: Optional[float] = None
 
     def _normalize_urls(self, feed_urls: Union[str, List[str]]) -> List[str]:
         if isinstance(feed_urls, str):
@@ -55,7 +57,7 @@ class RSSMonitor:
             return time.mktime(entry.updated_parsed)
         return time.time()
 
-    def poll_feed(self) -> Optional[Dict]:
+    def poll_feed(self, force: bool = False) -> Optional[Dict]:
         """
         Poll all RSS feeds for updates.
 
@@ -67,8 +69,7 @@ class RSSMonitor:
                 self.logger.warning("No RSS feed URLs configured")
                 return None
 
-            latest_entry = None
-            latest_time = 0.0
+            entries = []
 
             for url in self.feed_urls:
                 self.logger.info(f"Polling RSS feed: {url}")
@@ -77,19 +78,40 @@ class RSSMonitor:
                     self.logger.warning(f"No entries found in feed: {url}")
                     continue
 
-                entry = feed.entries[0]
-                entry_time = self._entry_timestamp(entry)
-                if entry_time > latest_time:
-                    latest_time = entry_time
-                    latest_entry = entry
+                for entry in feed.entries[:10]:
+                    entry_time = self._entry_timestamp(entry)
+                    entries.append((entry_time, entry))
 
-            if not latest_entry:
+            if not entries:
                 return None
 
-            latest_guid = latest_entry.get('id') or latest_entry.get('link')
+            entries.sort(key=lambda x: x[0], reverse=True)
 
-            if latest_guid != self.last_story_guid:
-                story = self._parse_entry(latest_entry)
+            def guid(e):
+                return e.get('id') or e.get('link')
+
+            selected = None
+            if force:
+                for _, entry in entries:
+                    entry_time = self._entry_timestamp(entry)
+                    if self.last_accepted_timestamp is not None and entry_time < self.last_accepted_timestamp:
+                        continue
+                    if guid(entry) not in self.seen_guids:
+                        selected = entry
+                        break
+                if not selected:
+                    selected = entries[0][1]
+            else:
+                for _, entry in entries:
+                    entry_time = self._entry_timestamp(entry)
+                    if self.last_accepted_timestamp is not None and entry_time < self.last_accepted_timestamp:
+                        continue
+                    if guid(entry) not in self.seen_guids:
+                        selected = entry
+                        break
+
+            if selected:
+                story = self._parse_entry(selected)
                 self.logger.info(f"New story detected: {story['title']}")
                 return story
 
@@ -99,8 +121,8 @@ class RSSMonitor:
             self.logger.error(f"Error polling RSS feeds: {e}")
             return None
 
-    def check_for_update(self) -> Optional[Dict]:
-        new_story = self.poll_feed()
+    def check_for_update(self, force: bool = False) -> Optional[Dict]:
+        new_story = self.poll_feed(force=force)
 
         if new_story is None:
             return None
@@ -117,9 +139,11 @@ class RSSMonitor:
                 return None
 
         self.last_story_guid = new_story['guid']
+        self.seen_guids.add(new_story['guid'])
         self.last_update_time = now
         self.current_story = new_story
         self.pending_story = None
+        self.last_accepted_timestamp = new_story.get('timestamp')
 
         return new_story
 
@@ -139,6 +163,7 @@ class RSSMonitor:
                 self.last_story_guid = story['guid']
                 self.last_update_time = now
                 self.current_story = story
+                self.last_accepted_timestamp = story.get('timestamp')
                 return story
 
         return None
@@ -150,5 +175,6 @@ class RSSMonitor:
             'summary': entry.get('summary', ''),
             'link': entry.get('link', ''),
             'published': entry.get('published', ''),
-            'source': entry.get('source', {}).get('title', 'Unknown')
+            'source': entry.get('source', {}).get('title', 'Unknown'),
+            'timestamp': self._entry_timestamp(entry)
         }

@@ -7,6 +7,7 @@ each anchor provides a different perspective on the current story.
 
 import logging
 import os
+import re
 import json
 import urllib.request
 import urllib.error
@@ -19,7 +20,7 @@ from safe_search import get_policy_context, is_sensitive_topic
 class AnchorPersona:
     """Represents a single anchor with their unique perspective."""
 
-    def __init__(self, name: str, focus: str, perspective: str, color: str):
+    def __init__(self, name: str, focus: str, perspective: str, color: str, ideology: str = '', method: str = '', pitch: float = 1.0):
         """
         Initialize an anchor persona.
 
@@ -33,6 +34,9 @@ class AnchorPersona:
         self.focus = focus
         self.perspective = perspective
         self.color = color
+        self.ideology = ideology
+        self.method = method
+        self.pitch = pitch
 
     def get_lower_third_text(self, story_title: str) -> Dict[str, str]:
         """
@@ -80,7 +84,10 @@ class AnchorCycler:
                 name=config['name'],
                 focus=config['focus'],
                 perspective=config['perspective'],
-                color=config['color']
+                color=config['color'],
+                ideology=config.get('ideology',''),
+                method=config.get('method',''),
+                pitch=config.get('pitch', 1.0),
             )
             for config in anchors_config
         ]
@@ -92,6 +99,7 @@ class AnchorCycler:
         self.rotation_count = 0
         self.current_commentary = None
         self.last_rotation_for_commentary = None
+        self.phase = "lead"
 
         # Memory
         self.story_memory = []
@@ -111,6 +119,7 @@ class AnchorCycler:
         self.rotation_count = 0
         self.current_commentary = None
         self.last_rotation_for_commentary = None
+        self.phase = "lead"
         self.story_memory = []
         self.last_pair_stances = []
         self.logger.info(
@@ -159,6 +168,17 @@ class AnchorCycler:
 
         return current_anchor
 
+    def force_anchor(self, anchor_name: str):
+        for idx, anchor in enumerate(self.anchors):
+            if anchor.name == anchor_name:
+                self.current_anchor_index = idx
+                self.last_rotation_time = datetime.now()
+                return anchor
+        return self.get_current_anchor()
+
+    def set_phase(self, phase: str):
+        self.phase = phase
+
     def update(self) -> Optional[AnchorPersona]:
         """
         Update anchor state, rotating if necessary.
@@ -170,13 +190,13 @@ class AnchorCycler:
             return self.rotate()
         return None
 
-    def get_perspective_text(self, story: Dict) -> Dict[str, str]:
+    def get_perspective_text(self, story: Dict, force_refresh: bool = False) -> Dict[str, str]:
         """
         Generate anchor commentary once per rotation with memory + synthesis.
         """
         anchor = self.get_current_anchor()
 
-        if self.last_rotation_for_commentary == self.rotation_count and self.current_commentary:
+        if (not force_refresh) and self.last_rotation_for_commentary == self.rotation_count and self.current_commentary:
             return {
                 'anchor': anchor.name,
                 'focus': anchor.focus,
@@ -216,8 +236,18 @@ class AnchorCycler:
             'perspective': anchor.perspective
         }
 
-    def _update_story_memory(self, anchor_name, stance, text, max_len=7):
-        self.story_memory.append({"anchor": anchor_name, "stance": stance, "text": text})
+    def _sanitize_memory_text(self, text: str) -> str:
+        if not text:
+            return text
+        text = re.sub(r"^(Anchor\s+[A-Z]:\s*)", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"^(Anchor\s+[A-Z]\s+here\.?\s*)", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"^(Agree(ing)?\s+with[^.]*\.\s*)", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"^Indeed,\s+", "", text, flags=re.IGNORECASE).strip()
+        return text
+
+    def _update_story_memory(self, anchor_name, stance, text, max_len=50):
+        clean_text = self._sanitize_memory_text(text)
+        self.story_memory.append({"anchor": anchor_name, "stance": stance, "text": clean_text})
         if len(self.story_memory) > max_len:
             self.story_memory = self.story_memory[-max_len:]
 
@@ -236,6 +266,11 @@ class AnchorCycler:
         recent = self.last_pair_stances[-2:]
         return len(recent) == 2 and all(s["stance"] == "disagree" for s in recent) and recent[0]["pair"] == recent[1]["pair"]
 
+
+    def _recent_other_takes(self, anchor_name: str, max_items: int = 3):
+        items = [m for m in self.story_memory if m["anchor"] != anchor_name]
+        return items[-max_items:]
+
     def _summarize_last_take(self):
         if not self.story_memory:
             return None
@@ -246,36 +281,84 @@ class AnchorCycler:
             return "thesis"
         last = self.story_memory[-1]["anchor"]
         mem = self.social_memory.get((anchor_name, last), {"agree": 0, "disagree": 0, "trust": 0})
-        return "disagree" if mem["trust"] < 0 else "agree"
+        if self._detect_disagreement_loop():
+            return "agree"
+        return "disagree" if mem["trust"] <= 1 else "agree"
 
     def _generate_llm_commentary(self, story: Dict, anchor: "AnchorPersona", stance: str, prev_summary: str, synthesize: bool, context_lines: list, sensitive: bool) -> str:
         model = os.environ.get("OLLAMA_MODEL", "mistral:latest")
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        timeout = float(os.environ.get("OLLAMA_TIMEOUT", "30"))
+        timeout = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
 
         archetypes = {
-            "Anchor A": "hylic: focus on constraints, costs, logistics",
-            "Anchor B": "psychic: focus on narrative, perception, myth",
-            "Anchor C": "pneumatic: focus on systems, long-range consequences"
+            "Anchor A": "boomer news veteran; authoritative, references history and institutions, speaks like a seasoned anchor who has seen it all",
+            "Anchor B": "gen X skeptic; cynical, blunt, anti-hype, references 90s/2000s tech busts, asks who profits from this",
+            "Anchor C": "millennial analyst; data-literate, startup-brained, optimistically anxious, references platforms and generational economics",
+            "Anchor D": "zoomer cultural critic; meme-fluent, blunt, short attention span energy, says things are cringe or based, asks if anyone under 30 cares",
+            "Anchor E": "AI-aware moderator; calm, systems-minded, identifies where others secretly agree, calls out circular debate, delivers synthesis"
         }
         persona = archetypes.get(anchor.name, anchor.perspective)
 
+        ai_disclosure = ""
+        hegelian_line = ""
+        if anchor.name == "Anchor E":
+            ai_disclosure = "You may briefly mention you are an AI anchor once. "
+            hegelian_line = "Include one sentence that explicitly states a Hegelian synthesis (thesis, antithesis, synthesis) in plain language. "
+
         if synthesize:
-            instruction = "Synthesize the prior two positions in one sentence."
+            instruction = "Blend both takes in one short sentence, then add one simple takeaway."
         elif stance == "disagree":
-            instruction = "Disagree with the prior anchor, briefly."
+            instruction = "Politely push back on one specific claim, then add your own angle."
         elif stance == "agree":
-            instruction = "Agree with the prior anchor, briefly."
+            instruction = "Agree briefly, then add a small caveat or concern."
         else:
-            instruction = "Offer a fresh thesis."
+            instruction = "Offer a clear take with one simple reason and one real-world impact."
+
+        phase_instruction = ""
+        if self.phase == "lead" and anchor.name == "Anchor A":
+            phase_instruction = "Lead with a concise summary, then your take."
+        elif self.phase in ("analysis_b", "analysis_c"):
+            phase_instruction = "Give your take without re‑summarizing the full headline."
+        elif self.phase == "roundtable":
+            phase_instruction = "Politely agree or disagree with the previous anchor and add a new angle."
+
+
+        recent = self._recent_other_takes(anchor.name, max_items=3)
+        recent_lines = " | ".join([
+            f"{m['anchor']}: {self._sanitize_memory_text(m['text'])}"
+            for m in recent
+        ]) or "none"
+
+        extra_urls = [u.strip() for u in os.environ.get("EXTRA_CONTEXT_URLS", "").split(",") if u.strip()]
 
         prompt = (
             f"You are {anchor.name}, a fast TV news anchor. "
-            f"Persona: {persona}. "
-            f"Always read the headline verbatim first. Exactly 2 sentences. End with a period. "
-            f"Then respond to the previous anchor: {prev_summary or 'none'}. "
+            f"Ideology: {anchor.ideology or anchor.perspective}. "
+            f"Method: {anchor.method or anchor.focus}. "
+            f"{'Always read the headline verbatim first. ' if (self.phase == 'lead' and anchor.name == 'Anchor A') else ''}"
+            f"Write 8–12 short sentences in one paragraph. Keep sentences under 16 words. "
+            f"Use simple, everyday words and explain jargon quickly. "
+            f"End with a handoff like 'And that's the setup — back to you.' "
+            f"Do NOT include your name or labels like 'Headline:' in the output. "
+            f"No repetition. "
+            f"If you cite a source, include the full URL. "
+            f"Use the headline, summary, sources, and local knowledge. "
+            f"You MAY infer based on general background knowledge, but any inferred claim MUST be labeled as a hypothesis or uncertain. "
+            f"Never state an inferred claim as a verified fact. "
+            f"You must include ONE novel inference labeled as a hypothesis (e.g., 'It may be that...'). "
+            f"You must include ONE challengeable claim that another anchor could disagree with. "
+            f"{'You may include a second hypothesis in roundtable mode. ' if self.phase == 'roundtable' else ''}"
+            f"{ai_disclosure}"
+            f"{hegelian_line}"
+            f"Avoid repeating points already stated in the earlier takes list. Introduce a new angle. "
+            f"{phase_instruction} "
+            f"Earlier takes from other anchors: {recent_lines}. "
+            f"Previous anchor summary: {prev_summary or 'none'}. "
             f"{instruction} "
             f"Headline: {story.get('title','')}. "
+            f"Summary: {story.get('summary','')}. "
+            f"Source: {story.get('link','')}. "
+            f"Extra context URLs: {', '.join(extra_urls) if extra_urls else 'none'}. "
         )
 
         payload = {
@@ -284,9 +367,9 @@ class AnchorCycler:
             "stream": False,
             "keep_alive": "5m",
             "options": {
-                "num_predict": 180,
-                "temperature": 1.2,
-                "top_p": 0.9,
+                "num_predict": 280,
+                "temperature": 1.3,
+                "top_p": 0.92,
                 "repeat_penalty": 1.1
             }
         }
@@ -300,7 +383,21 @@ class AnchorCycler:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.load(resp)
             text = data.get("response", "").strip()
-            return text if text else None
+            if not text:
+                return None
+            # Remove leading anchor labels like "Anchor A:" or "Anchor A here."
+            text = re.sub(r"^(Anchor\s+[A-Z]:\s*)", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"^(Anchor\s+[A-Z]\s+here\.?\s*)", "", text, flags=re.IGNORECASE).strip()
+            # Remove unwanted labels
+            text = re.sub(r"^(Headline:|Summary:)\s*", "", text, flags=re.IGNORECASE).strip()
+            # Remove prompt leakage blocks
+            text = re.sub(r"Previous anchor summary:.*$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+            text = re.sub(r"(Headline:|Summary:|Source:|Extra context URLs:).*", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+            text = re.sub(r"^URL:\s*", "", text, flags=re.IGNORECASE).strip()
+            # Normalize whitespace but keep paragraph breaks
+            text = re.sub(r"\n\s*\n", "\n\n", text)
+            text = re.sub(r"[ \t]+", " ", text)
+            return text.strip()
         except Exception as exc:
             self.logger.warning("LLM commentary failed: %s", exc)
             return None

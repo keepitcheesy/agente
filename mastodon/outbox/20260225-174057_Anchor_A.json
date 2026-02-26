@@ -1,0 +1,15 @@
+{
+  "anchor": "Anchor A",
+  "story_title": "Bitcoin\u2019s upcoming $10.5B options expiry may end bear market: Here\u2019s how",
+  "text": "And now onto our next story. The upcoming $10.5 billion Bitcoin options expiry is anticipated this Friday, signaling a potential end to the ongoing bear market. Analysis of data suggests a balance between bullish and bearish sentiment. However, historically, large option expiries have occasionally led to significant price swings (Cointelegraph, 2023). A hypothesis is that if bullish sentiment surges, it may drive prices upward, potentially stabilizing the market.\n\nOn the flip side, bears might argue that recent market downturns could escalate, causing further disruption. And that's the setup \u2014 back to you.",
+  "metrics": {
+    "pulse_mean": 3.7627,
+    "pulse_variance": 0.0464,
+    "pulse_range": 1.1073,
+    "spectral_entropy": 0.6933,
+    "jaccard_max": 0.129,
+    "status": "PUBLISHABLE",
+    "reason": "pink_noise_resonance"
+  },
+  "timestamp": "2026-02-25T22:40:57.920167+00:00"
+}

@@ -1,0 +1,162 @@
+# === SINGLE INSTANCE LOCK ===
+LOCKFILE="/tmp/auto_switch_stream.lock"
+if [[ -f "$LOCKFILE" ]] && kill -0 "$(cat "$LOCKFILE" 2>/dev/null)" 2>/dev/null; then
+  echo "Already running (PID $(cat $LOCKFILE)) - exiting"
+  exit 1
+fi
+echo $$ > "$LOCKFILE"
+trap "rm -f $LOCKFILE" EXIT INT TERM
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+trap '' HUP
+
+LOCK_FILE="/tmp/auto_switch_stream.lock"
+exec 200>"$LOCK_FILE"
+flock -n 200 || { echo "Another auto_switch_stream instance is running"; exit 1; }
+
+MIN_SWITCH_SECONDS="${MIN_SWITCH_SECONDS:-60}"
+MIN_STORY_AGE_SECONDS="${MIN_STORY_AGE_SECONDS:-60}"
+
+AUDIO_DIR="/home/remvelchio/agent/tmp/backlog/audio"
+AUDIO_DIR="$(readlink -f "$AUDIO_DIR")"
+VIDEO_DIR="/home/remvelchio/agent/tmp/backlog/video"
+VIDEO_DIR="$(readlink -f "$VIDEO_DIR")"
+READY_FILE="/home/remvelchio/agent/tmp/backlog/READY"
+CONCAT_CACHE_DIR="/home/remvelchio/agent/tmp/concat_cache"
+
+VIDEO_SOURCE="${VIDEO_SOURCE:-/home/remvelchio/agent/tmp/video/newscaster.mp4}"
+STREAM_URL="${STREAM_URL:-rtmp://localhost:1935/live/abc123}"
+
+TICKER_FILE="/home/remvelchio/agent/tmp/ticker.txt"
+TICKER_SCROLL_FILE="/home/remvelchio/agent/tmp/ticker_scroll.txt"
+TICKER_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+TICKER_HEIGHT=60
+TICKER_FONT_SIZE=28
+
+AUDIO_FIFO="/tmp/owncast_audio_fifo.pcm"
+VIDEO_FIFO="/tmp/owncast_video_fifo.ffconcat"
+
+START_BED="/home/remvelchio/agent/assets/intense_news_bed_60s.wav"
+BED_CHUNK_SECONDS=5
+BED_FALLBACK="/home/remvelchio/agent/assets/intense_news_bed_60s.wav"
+
+mkdir -p "$AUDIO_DIR" "$VIDEO_DIR" "$CONCAT_CACHE_DIR"
+
+rm -f "$AUDIO_FIFO" "$VIDEO_FIFO"
+mkfifo "$AUDIO_FIFO"
+mkfifo "$VIDEO_FIFO"
+
+cleanup() {
+  rm -f "$AUDIO_FIFO" "$VIDEO_FIFO"
+}
+trap cleanup EXIT
+
+echo "Watching audio in $AUDIO_DIR and video in $VIDEO_DIR"
+
+if [[ -f "$START_BED" ]]; then
+  cp -f "$START_BED" "$AUDIO_DIR/000_start_bed.wav"
+  touch -t 197001010000 "$AUDIO_DIR/000_start_bed.wav"
+fi
+
+audio_feeder() {
+  set +e
+  exec 3>"$AUDIO_FIFO"
+  shopt -s nullglob
+
+  while true; do
+    next_audio="$(find "$AUDIO_DIR" -maxdepth 1 -type f -name "*.wav" -printf '%T@ %p\n' 2>/dev/null | sort -n | head -n1 | cut -d' ' -f2-)"
+
+    if [[ -n "$next_audio" ]]; then
+      if [[ ! -s "$next_audio" ]]; then
+        sleep 0.2
+        continue
+      fi
+      if ffmpeg -hide_banner -loglevel error -i "$next_audio"         -af "aresample=async=1:first_pts=0"         -f s16le -ac 1 -ar 44100 - | cat >&3; then
+        rm -f "$next_audio"
+      else
+        sleep 0.5
+      fi
+    else
+      if [[ -f "$BED_FALLBACK" ]]; then
+        ffmpeg -hide_banner -loglevel error -stream_loop -1 -i "$BED_FALLBACK"           -t "$BED_CHUNK_SECONDS" -f s16le -ac 1 -ar 44100 - | cat >&3
+      else
+        ffmpeg -hide_banner -loglevel error -f lavfi -i anullsrc=cl=mono:r=44100           -t "$BED_CHUNK_SECONDS" -f s16le -ac 1 -ar 44100 - | cat >&3
+      fi
+    fi
+  done
+}
+
+ticker_scroll_feeder() {
+  while true; do
+    if [[ -f "$TICKER_FILE" ]]; then
+      raw="$(tr '\n' ' ' < "$TICKER_FILE" | sed 's/[[:space:]]\+/ /g')"
+      raw="${raw//%/ percent }"
+      printf "%s" "$raw" > "${TICKER_SCROLL_FILE}.tmp"
+      mv -f "${TICKER_SCROLL_FILE}.tmp" "$TICKER_SCROLL_FILE"
+    fi
+    sleep 2
+  done
+}
+
+is_valid_video() {
+  local f="$1"
+  [[ -s "$f" ]] || return 1
+  command -v ffprobe >/dev/null 2>&1 || return 1
+  ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f" >/dev/null 2>&1
+}
+
+get_next_queue_video() {
+  while read -r ts f; do
+    if is_valid_video "$f"; then
+      echo "$f"
+      return 0
+    fi
+  done < <(find "$VIDEO_DIR" -maxdepth 1 -name "*.mp4" -size +0c -printf '%T@ %p\n' 2>/dev/null | sort -n)
+  return 1
+}
+
+
+
+
+
+
+
+video_feeder() {
+  set +e
+  exec 4>"$VIDEO_FIFO"
+  echo "ffconcat version 1.0" >&4
+  while true; do
+    printf "file '%s'\n" "/home/remvelchio/agent/tmp/test_loop.mp4" >&4
+    printf "duration 10\n" >&4
+    sleep 9
+  done
+}
+start_ffmpeg() {
+  local vf="drawbox=x=0:y=h-${TICKER_HEIGHT}:w=iw:h=${TICKER_HEIGHT}:color=black@0.55:t=fill"
+  vf+=",drawtext=fontfile=${TICKER_FONT}:textfile=${TICKER_SCROLL_FILE}:reload=1:expansion=none:fontcolor=white"
+  vf+=":fontsize=${TICKER_FONT_SIZE}:x=w-mod(t*120\,(w+tw)):y=h-${TICKER_HEIGHT}+14"
+  vf+=":shadowcolor=black@0.6:shadowx=2:shadowy=2"
+
+  ffmpeg -loglevel warning -stats     -fflags +genpts -avoid_negative_ts make_zero     -f concat -safe 0 -i "$VIDEO_FIFO"     -thread_queue_size 1024 -f s16le -ar 44100 -ac 1 -i "$AUDIO_FIFO"     -map 0:v -map 1:a     -vf "$vf"     -c:v libx264 -preset veryfast -tune zerolatency -g 50 -keyint_min 50 -sc_threshold 0     -c:a aac -b:a 128k -ar 44100     -pix_fmt yuv420p -f flv "$STREAM_URL" >>/home/remvelchio/agent/tmp/ffmpeg_rtmp.log 2>&1
+}
+
+audio_feeder &
+video_feeder &
+ticker_scroll_feeder &
+
+ffmpeg_pid=""
+
+start_ffmpeg &
+ffmpeg_pid=$!
+sleep 1
+
+while true; do
+  if [[ -n "$ffmpeg_pid" ]] && ! kill -0 "$ffmpeg_pid" 2>/dev/null; then
+    echo "ffmpeg died; restarting..."
+    start_ffmpeg &
+    ffmpeg_pid=$!
+  fi
+  sleep 2
+done

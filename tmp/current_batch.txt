@@ -1,0 +1,11 @@
+ffconcat version 1.0
+file '/home/remvelchio/agent/tmp/archive/video/intermission_20260225-164043.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-163254_Anchor_B.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-164205_Anchor_B.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-181041_Anchor_A.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-160153_Anchor_E.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-164623_Anchor_A.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-175437_Anchor_C.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-154746_Anchor_C.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-182531_Anchor_C.mp4'
+file '/home/remvelchio/agent/tmp/archive/video/story_20260225-160625_Anchor_C.mp4'

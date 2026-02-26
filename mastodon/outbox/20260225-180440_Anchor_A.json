@@ -1,0 +1,15 @@
+{
+  "anchor": "Anchor A",
+  "story_title": "Medical device maker UFP Technologies warns of data stolen in cyberattack",
+  "text": "And now onto our next story. In a concerning turn of events, UFP Technologies - an American manufacturer of medical devices - has announced a cyberattack that's compromised its IT systems and data. This breach could potentially impact the production and delivery of essential medical equipment at a time when such resources are already stretched thin.\n\nHistorically, attacks on healthcare institutions have been cause for concern, as they can compromise patient data and disrupt crucial services. In this case, a cyberattack on a major medical device maker raises additional concerns about the broader supply chain's vulnerability.\n\nIt may be that the breach could lead to supply disruptions, causing delays or shortages of vital medical equipment in hospitals and clinics across the nation. However, UFP Technologies has not yet provided details on the extent of the data theft or the nature of the attack.\n\nThe challenge here lies in understanding whether the stolen data includes sensitive information about ongoing projects or blueprints for new medical devices. And that's the setup \u2014 back to you.",
+  "metrics": {
+    "pulse_mean": 3.6786,
+    "pulse_variance": 0.0424,
+    "pulse_range": 1.2005,
+    "spectral_entropy": 0.7029,
+    "jaccard_max": 0.1707,
+    "status": "PUBLISHABLE",
+    "reason": "pink_noise_resonance"
+  },
+  "timestamp": "2026-02-25T23:04:40.305692+00:00"
+}

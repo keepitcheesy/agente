@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+set -uo pipefail
+trap "" HUP
+
+LOCK_FILE="/tmp/auto_switch_stream.lock"
+exec 200>"$LOCK_FILE"
+flock -n 200 || { echo "Another instance running"; exit 1; }
+
+AUDIO_DIR="$(readlink -f /home/remvelchio/agent/tmp/backlog/audio)"
+VIDEO_DIR="$(readlink -f /home/remvelchio/agent/tmp/backlog/video)"
+STREAM_URL="${STREAM_URL:-rtmp://localhost:1935/live/abc123}"
+
+TICKER_FILE="/home/remvelchio/agent/tmp/ticker.txt"
+TICKER_SCROLL_FILE="/home/remvelchio/agent/tmp/ticker_scroll.txt"
+TICKER_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+TICKER_HEIGHT=60
+TICKER_FONT_SIZE=28
+
+START_BED="/home/remvelchio/agent/assets/intense_news_bed_60s.wav"
+BED_FALLBACK="$START_BED"
+TEST_LOOP="/home/remvelchio/agent/tmp/test_loop.mp4"
+PLAYLIST="/tmp/owncast_playlist.txt"
+MERGED_AUDIO="/tmp/owncast_merged_audio.wav"
+BATCH_SIZE=10
+
+mkdir -p "$AUDIO_DIR" "$VIDEO_DIR"
+
+cleanup() {
+  echo "Cleaning up..."
+  kill $(jobs -p) 2>/dev/null || true
+  wait 2>/dev/null || true
+  rm -f "$PLAYLIST" "$MERGED_AUDIO" /tmp/owncast_audio_list.txt
+}
+trap cleanup EXIT INT TERM
+
+echo "Starting stream pipeline (no-FIFO mode)..."
+echo "Watching audio=$AUDIO_DIR video=$VIDEO_DIR"
+
+if [[ -f "$START_BED" ]]; then
+  cp -f "$START_BED" "$AUDIO_DIR/000_start_bed.wav"
+  touch -t 197001010000 "$AUDIO_DIR/000_start_bed.wav"
+fi
+
+[[ -f "$TICKER_SCROLL_FILE" ]] || echo "LIVE" > "$TICKER_SCROLL_FILE"
+
+ticker_scroll_feeder() {
+  while true; do
+    if [[ -f "$TICKER_FILE" ]]; then
+      raw="$(tr '\n' ' ' < "$TICKER_FILE" | sed 's/[[:space:]]\+/ /g')"
+      raw="${raw//%/ percent }"
+      printf "%s" "$raw" > "${TICKER_SCROLL_FILE}.tmp"
+      mv -f "${TICKER_SCROLL_FILE}.tmp" "$TICKER_SCROLL_FILE"
+    fi
+    sleep 2
+  done
+}
+
+build_audio() {
+  local consumed_files=""
+  local count=0
+  local inputs=""
+
+  while IFS= read -r line; do
+    local f="${line#* }"
+    if [[ -s "$f" ]]; then
+      inputs="$inputs -i $f"
+      consumed_files="$consumed_files $f"
+      count=$((count + 1))
+      [[ $count -ge 20 ]] && break
+    fi
+  done < <(find "$AUDIO_DIR" -maxdepth 1 -type f -name '*.wav' -printf '%T@ %p\n' 2>/dev/null | sort -n)
+
+  if [[ $count -gt 0 ]]; then
+    # Build filter to resample each input to 44100Hz mono, then concatenate
+    local filter=""
+    for i in $(seq 0 $((count - 1))); do
+      filter="${filter}[$i:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono[a$i];"
+    done
+    local concat_inputs=""
+    for i in $(seq 0 $((count - 1))); do
+      concat_inputs="${concat_inputs}[a$i]"
+    done
+    filter="${filter}${concat_inputs}concat=n=${count}:v=0:a=1[out]"
+
+    eval ffmpeg -hide_banner -loglevel error -y $inputs \
+      -filter_complex "'$filter'" -map "'[out]'" \
+      -ar 44100 -ac 1 "$MERGED_AUDIO" 2>/dev/null
+
+    if [[ -s "$MERGED_AUDIO" ]]; then
+      for f in $consumed_files; do
+        rm -f "$f"
+      done
+      echo "audio: merged $count WAVs (resampled to 44100Hz)"
+      return 0
+    fi
+  fi
+
+  # Fallback: resample bed music to 44100Hz
+  ffmpeg -hide_banner -loglevel error -y -i "$BED_FALLBACK" -ar 44100 -ac 1 "$MERGED_AUDIO" 2>/dev/null
+  echo "audio: using bed fallback (resampled)"
+}
+
+build_video_playlist() {
+  local tmpfile="/tmp/owncast_playlist_tmp.txt"
+  local files_added=0
+  PLAYED_FILES=""
+
+  echo "ffconcat version 1.0" > "$tmpfile"
+
+  while IFS= read -r line; do
+    local f="${line#* }"
+    if [[ -s "$f" ]] && ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f" >/dev/null 2>&1; then
+      local dur
+      dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f" 2>/dev/null)
+      local dur_int=${dur%%.*}
+      [[ -z "$dur_int" || "$dur_int" -le 0 ]] 2>/dev/null && dur_int=10
+      echo "file $f" >> "$tmpfile"
+      echo "duration $dur_int" >> "$tmpfile"
+      PLAYED_FILES="$PLAYED_FILES $f"
+      files_added=$((files_added + 1))
+      [[ $files_added -ge $BATCH_SIZE ]] && break
+    fi
+  done < <(find "$VIDEO_DIR" -maxdepth 1 -name '*.mp4' -size +0c -printf '%T@ %p\n' 2>/dev/null | sort -n)
+
+  if [[ $files_added -gt 0 ]]; then
+    local lastfile
+    lastfile=$(tail -2 "$tmpfile" | head -1 | sed 's/^file //')
+    echo "file $lastfile" >> "$tmpfile"
+    mv -f "$tmpfile" "$PLAYLIST"
+    echo "$files_added"
+  else
+    rm -f "$tmpfile"
+    echo "0"
+  fi
+}
+
+build_vf() {
+  local vf="drawbox=x=0:y=h-${TICKER_HEIGHT}:w=iw:h=${TICKER_HEIGHT}:color=black@0.55:t=fill"
+  vf+=",drawtext=fontfile=${TICKER_FONT}:textfile=${TICKER_SCROLL_FILE}:reload=1:expansion=none:fontcolor=white"
+  vf+=":fontsize=${TICKER_FONT_SIZE}:x=w-mod(t*120\,(w+tw)):y=h-${TICKER_HEIGHT}+14"
+  vf+=":shadowcolor=black@0.6:shadowx=2:shadowy=2"
+  echo "$vf"
+}
+
+ticker_scroll_feeder &
+
+while true; do
+  # Build audio (regular file, no FIFO)
+  build_audio
+
+  # Build video playlist
+  video_count="$(build_video_playlist)"
+  vf="$(build_vf)"
+
+  if [[ "$video_count" -gt 0 ]]; then
+    echo "$(date): Playing $video_count videos..."
+    ffmpeg -loglevel warning -stats \
+      -fflags +genpts -avoid_negative_ts make_zero \
+      -f concat -safe 0 -re -i "$PLAYLIST" \
+      -stream_loop -1 -i "$MERGED_AUDIO" \
+      -map 0:v -map 1:a \
+      -vf "$vf" \
+      -c:v libx264 -preset veryfast -tune zerolatency -g 50 -keyint_min 50 -sc_threshold 0 \
+      -c:a aac -b:a 128k -ar 44100 \
+      -pix_fmt yuv420p -shortest -f flv "$STREAM_URL" >>/home/remvelchio/agent/tmp/ffmpeg_rtmp.log 2>&1 || true
+
+    # Clean up played videos (read files from the playlist)
+    while IFS= read -r line; do
+      f="${line#file }"
+      f=$(echo "$f" | tr -d "'")
+      if [[ -f "$f" ]]; then
+        rm -f "$f"
+        echo "$(date): Removed: $(basename \"$f\")"
+      fi
+    done < "$PLAYLIST"
+    echo "$(date): Queue empty, test loop 30s..."
+    ffmpeg -loglevel warning -stats \
+      -stream_loop -1 -re -t 30 -i "$TEST_LOOP" \
+      -stream_loop -1 -i "$MERGED_AUDIO" \
+      -map 0:v -map 1:a \
+      -vf "$vf" \
+      -c:v libx264 -preset veryfast -tune zerolatency -g 50 -keyint_min 50 -sc_threshold 0 \
+      -c:a aac -b:a 128k -ar 44100 \
+      -pix_fmt yuv420p -shortest -f flv "$STREAM_URL" >>/home/remvelchio/agent/tmp/ffmpeg_rtmp.log 2>&1 || true
+  fi
+
+  rm -f "$MERGED_AUDIO"
+  sleep 1
+done

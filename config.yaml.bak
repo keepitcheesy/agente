@@ -1,61 +1,146 @@
-# Agente 24/7 Morning Show Configuration
-
-# RSS Feed Configuration
 rss:
-  url: "https://rss.example.com/feed.xml"  # Update with your RSS feed URL
-  polling_interval: 60  # seconds - how often to poll for new items
-  debounce_timeout: 5  # seconds - minimum time between story transitions
-
-# Anchor Persona Configuration
+- https://hnrss.org/frontpage
+- https://lobste.rs/rss
+- https://news.ycombinator.com/rss
+- http://feeds.arstechnica.com/arstechnica/index
+- https://www.theregister.com/headlines.atom
+- https://hackaday.com/feed/
+- https://spectrum.ieee.org/feeds/feed.rss
+- https://lwn.net/headlines/rss
+- https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml
+- https://feeds.bbci.co.uk/news/technology/rss.xml
+- https://www.theverge.com/rss/index.xml
+- https://techcrunch.com/feed/
+- https://www.wired.com/feed/rss
+- https://engadget.com/rss.xml
+- https://research.google/blog/rss
+- https://aws.amazon.com/blogs/machine-learning/feed/
+- https://huggingface.co/blog/feed.xml
+- https://www.artificialintelligence-news.com/feed/
+- https://blogs.nvidia.com/feed/
+- https://api.quantamagazine.org/feed/
+- https://www.technologyreview.com/feed/
+- https://phys.org/rss-feed/
+- https://www.nature.com/nature.rss
+- https://scitechdaily.com/feed/
+- https://cointelegraph.com/rss
+- https://decrypt.co/feed
+- https://blockworks.co/feed
+- https://krebsonsecurity.com/feed/
+- https://www.schneier.com/blog/atom.xml
+- https://thehackernews.com/feeds/posts/default
+- https://darkreading.com/rss.xml
+- https://www.bleepingcomputer.com/feed/
+- https://therecord.media/feed
+- https://securityaffairs.com/feed
+- https://www.securityweek.com/feed/
+- https://cyberscoop.com/feed/
+- https://feeds.feedburner.com/TheHackersNews
+- https://www.zdnet.com/news/rss.xml
 anchors:
   cycle_order:
-    - name: "Anchor A"
-      focus: "headline/facts"
-      perspective: "What happened and when"
-      color: "#FF0000"  # Red
-    - name: "Anchor B"
-      focus: "implications"
-      perspective: "Why it matters and what comes next"
-      color: "#0000FF"  # Blue
-    - name: "Anchor C"
-      focus: "context"
-      perspective: "Background and historical perspective"
-      color: "#00FF00"  # Green
-  rotation_interval: 30  # seconds - time each anchor speaks before cycling
-
-# Visual Configuration (CNN-style)
+  - name: Anchor A
+    focus: lead intro + headline framing
+    perspective: Morning show moderator; crisp, calm, and decisive
+    ideology: Center-left pragmatist
+    method: Open with a clear summary, then lay out the stakes
+    color: '#FF0000'
+    pitch: 1.03
+  - name: Anchor B
+    focus: populist critique + conflict
+    perspective: Combative talk host parody; punchy, skeptical, and provocative
+    ideology: Populist anti-establishment
+    method: Push back hard, highlight winners/losers, use rhetorical questions
+    color: '#0000FF'
+    pitch: 0.92
+  - name: Anchor C
+    focus: markets + incentives
+    perspective: Cable financial analyst; data-driven and pragmatic
+    ideology: Pro-growth pragmatist
+    method: Lead with numbers, incentives, and second-order impacts
+    color: '#00FF00'
+    pitch: 1.0
+  - name: Anchor D
+    focus: people + culture
+    perspective: Empathetic cohost; values-driven, plainspoken
+    ideology: Humanitarian pragmatist
+    method: Connect policy to everyday lives and cultural meaning
+    color: '#FFA500'
+    pitch: 1.06
+  - name: Anchor E
+    focus: synthesis + systems view
+    perspective: AI-aware analyst; reflective, systems-minded
+    ideology: Systems pragmatist
+    method: Reconcile disagreements and highlight structural dynamics
+    color: '#800080'
+    pitch: 0.98
+  rotation_interval: 60
 visuals:
   lower_third:
     enabled: true
     update_per_anchor: true
     height: 120
     font_size: 18
-  
   ticker:
     enabled: true
-    speed: 2  # pixels per frame
+    speed: 2
     height: 40
     font_size: 14
-  
   live_tag:
     enabled: true
-    position: "top-left"
+    position: top-left
     show_timestamp: true
     show_episode_id: true
-  
   story_image:
     pan_zoom_enabled: true
-    pan_speed: 0.5  # pixels per second
+    pan_speed: 0.5
     zoom_factor: 1.1
-    duration: 120  # seconds for full pan/zoom cycle
-
-# Broadcast Configuration
+    duration: 120
 broadcast:
-  mode: "24/7"
-  breaking_news_transition_duration: 2  # seconds
-  default_story_duration: null  # null = event-driven (wait for new RSS item)
-  
-# Logging
+  mode: 24/7
+  breaking_news_transition_duration: 2
+  default_story_duration: null
+  story_duration_seconds: 300
+  segment_durations_seconds:
+    anchor_a: 60
+    anchor_b: 60
+    anchor_c: 60
+    anchor_d: 60
+    roundtable: 60
+  intermission_every_stories: 3
+  intermission_seconds: 15
+  intermission_bed_path: /home/remvelchio/agent/tmp/audio/news_bed.wav
+  intermission_announcement: THIS IS AYE EYE EN EN, STAY TUNED AND SUBSCRIBE FOR MORE
+    STAY TUNED
+  queue_mode: true
+  prebuffer_story_count: 12
+  refresh_threshold: 3
+  backlog_ready_flag: /home/remvelchio/agent/tmp/backlog/READY
+tts:
+  model_path: /home/remvelchio/agent/models/piper/en_US-lessac-medium.onnx
+  config_path: /home/remvelchio/agent/models/piper/en_US-lessac-medium.onnx.json
+  cache_dir: /home/remvelchio/agent/tmp/backlog/audio
+  voice_map:
+    Anchor A:
+      model_path: /home/remvelchio/agent/models/piper/en_US-amy-medium.onnx
+      config_path: /home/remvelchio/agent/models/piper/en_US-amy-medium.onnx.json
+    Anchor B:
+      model_path: /home/remvelchio/agent/models/piper/en_US-ryan-medium.onnx
+      config_path: /home/remvelchio/agent/models/piper/en_US-ryan-medium.onnx.json
+    Anchor C:
+      model_path: /home/remvelchio/agent/models/piper/en_GB-alan-medium.onnx
+      config_path: /home/remvelchio/agent/models/piper/en_GB-alan-medium.onnx.json
+    Anchor D:
+      model_path: /home/remvelchio/agent/models/piper/en_US-ljspeech-medium.onnx
+      config_path: /home/remvelchio/agent/models/piper/en_US-ljspeech-medium.onnx.json
+    Anchor E:
+      model_path: /home/remvelchio/agent/models/piper/en_GB-alba-medium.onnx
+      config_path: /home/remvelchio/agent/models/piper/en_GB-alba-medium.onnx.json
+video:
+  output_dir: /home/remvelchio/agent/tmp/backlog/video
+  default_duration: 6
+narration:
+  log_path: /home/remvelchio/agent/tmp/scripts/narration.log
 logging:
-  level: "INFO"
-  file: "agente.log"
+  level: INFO
+  file: /home/remvelchio/agent/logs/agente.log

@@ -1,0 +1,15 @@
+{
+  "anchor": "Anchor C",
+  "story_title": "New Webb Telescope photos show off the Exposed Cranium Nebula",
+  "text": "The new photos of the Exposed Cranium Nebula from NASA and Engadget showcase a cosmic brain-like structure that could indicate the final stages of a star's life, a potential pattern in space evolution. Webb's NIRCam and MIRI instruments captured the nebula's distinct regions, hinting at its complex history. However, one hypothesis suggests that multiple celestial events or factors could have contributed to the brain-like formation \u2014 offering room for further exploration in this cosmic mystery. And that's the setup \u2014 back to you.",
+  "metrics": {
+    "pulse_mean": 3.7341,
+    "pulse_variance": 0.0421,
+    "pulse_range": 1.0537,
+    "spectral_entropy": 0.7046,
+    "jaccard_max": 0.1224,
+    "status": "PUBLISHABLE",
+    "reason": "pink_noise_resonance"
+  },
+  "timestamp": "2026-02-26T00:00:08.937964+00:00"
+}
