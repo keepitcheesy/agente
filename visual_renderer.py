@@ -10,6 +10,7 @@ This module handles rendering the CNN-style visual stack including:
 
 import logging
 from typing import Dict, Optional
+from pathlib import Path
 from datetime import datetime
 import math
 
@@ -288,4 +289,21 @@ class VisualStack:
     
     def set_ticker_text(self, text: str):
         """Update ticker text."""
-        self.ticker_text = text
+        clean = (text or "").strip()
+        if not clean:
+            clean = "Breaking news coverage continues 24/7 • Stay tuned for updates"
+
+        bullet_count = clean.count("•")
+        if len(clean) < 300 or bullet_count < 3:
+            try:
+                standby = Path("/home/remvelchio/agent/tmp/ticker_standby.txt").read_text().strip()
+                if standby:
+                    if clean:
+                        clean = f"{clean}  •  {standby}"
+                    else:
+                        clean = standby
+            except FileNotFoundError:
+                pass
+
+        self.ticker_text = clean
+        Path("/home/remvelchio/agent/tmp/ticker.txt").write_text(clean)
