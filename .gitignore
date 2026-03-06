@@ -19,3 +19,5 @@ mastodon/outbox/
 *.mp4
 *.png
 *.jsonl
+models/piper/*.onnx
+models/piper/*.onnx.json

@@ -7,6 +7,7 @@ Coordinates RSS monitoring, anchor cycling, and visual rendering.
 
 import logging
 import time
+import threading
 from typing import Optional, Dict
 from datetime import datetime
 import uuid
@@ -87,12 +88,17 @@ class BroadcastPipeline:
         rss_config = config.get('rss', {})
         if isinstance(rss_config, list):
             feed_urls = rss_config
-            polling_interval = 60
-            debounce_timeout = 5
+            polling_interval = 90
+            debounce_timeout = 10
         else:
-            feed_urls = rss_config.get('urls') or rss_config.get('url')
-            polling_interval = rss_config.get('polling_interval', 60)
-            debounce_timeout = rss_config.get('debounce_timeout', 5)
+            # support both legacy 'urls'/'url' keys and new 'feeds' list
+            feed_urls = (
+                rss_config.get('feeds')
+                or rss_config.get('urls')
+                or rss_config.get('url')
+            )
+            polling_interval = rss_config.get('polling_interval', 90)
+            debounce_timeout = rss_config.get('debounce_timeout', 10)
 
         self.rss_monitor = RSSMonitor(
             feed_urls=feed_urls,
@@ -131,12 +137,18 @@ class BroadcastPipeline:
         os.makedirs(os.path.dirname(self.narration_log_path), exist_ok=True)
         self.current_audio_path = None
         self.current_video_path = None
+        self._segment_queue = []
+        self._segment_queue_lock = threading.Lock()
+        self._pregen_thread = None
+        self._pregen_done = False
         
         # State tracking
         self.state = BroadcastState.IDLE
         self.current_story: Optional[Dict] = None
         self.last_poll_time = 0
         self.running = False
+        self._narration_lock = threading.Lock()
+        self._narration_thread = None
         self.frame_count = 0
         
         # Performance tracking
@@ -280,9 +292,11 @@ class BroadcastPipeline:
         if new_story:
             if self.current_story and self.story_start_time:
                 elapsed = time.time() - self.story_start_time
-                if self.story_duration_seconds and elapsed < self.story_duration_seconds:
+                chain_active = (not self._pregen_done) or (len(self._segment_queue) > 0)
+                still_in_window = self.story_duration_seconds and elapsed < self.story_duration_seconds
+                if chain_active or still_in_window:
                     self.rss_monitor.pending_story = new_story
-                    self.logger.info("Deferring new story until current segment completes")
+                    self.logger.info("Deferring new story — anchor chain still active")
                     return
             self._transition_to_story(new_story)
     
@@ -322,18 +336,6 @@ class BroadcastPipeline:
             {"phase": "roundtable", "anchor": "Anchor E", "duration": self.segment_durations_seconds.get("roundtable", 60)},
         ]
         self.anchor_cycler.set_phase("lead")
-
-        self.story_start_time = time.time()
-        self.current_phase = "lead"
-        self.story_schedule_enabled = True
-        self.story_schedule = [
-            {"phase": "lead", "anchor": "Anchor A", "duration": self.segment_durations_seconds.get("anchor_a", 60)},
-            {"phase": "analysis_b", "anchor": "Anchor B", "duration": self.segment_durations_seconds.get("anchor_b", 60)},
-            {"phase": "analysis_c", "anchor": "Anchor C", "duration": self.segment_durations_seconds.get("anchor_c", 60)},
-            {"phase": "analysis_d", "anchor": "Anchor D", "duration": self.segment_durations_seconds.get("anchor_d", 60)},
-            {"phase": "roundtable", "anchor": "Anchor E", "duration": self.segment_durations_seconds.get("roundtable", 60)},
-        ]
-        self.anchor_cycler.set_phase("lead")
         self.logger.info("Story schedule started (7 minutes)")
 
         # Reset anchor cycling for new story
@@ -358,20 +360,27 @@ class BroadcastPipeline:
             f"BREAKING: {story['title']} • Stay tuned for details"
         )
 
-        # Generate initial narration for this story
-        current_anchor = self.anchor_cycler.get_current_anchor()
-        self._generate_anchor_narration(current_anchor, lead_in=True)
-        
-        # Simulate breaking news transition duration
-        transition_duration = self.config.get('broadcast', {}).get(
-            'breaking_news_transition_duration', 2
+
+        # Clear any previous pre-generated queue
+        with self._segment_queue_lock:
+            self._segment_queue.clear()
+        self._pregen_done = False
+
+        # Play bed music immediately so there is no silence on startup
+        self._play_bed_music()
+
+        # Kick off serial pre-generation in background
+        self._pregen_thread = threading.Thread(
+            target=self._pregenerate_story_segments,
+            args=(story,),
+            daemon=True
         )
-        time.sleep(transition_duration)
-        
-        # Return to running state
+        self._pregen_thread.start()
+
+        # Return to running state (bed music covers the gap)
         self.state = BroadcastState.RUNNING
-        
-        self.logger.info("Transition complete, resuming normal coverage")
+        self.logger.info('Transition complete — pre-generation started, bed music active')
+
     
     def _apply_story_schedule(self) -> None:
         """Apply the current story schedule for 5-anchor coverage."""
@@ -392,11 +401,20 @@ class BroadcastPipeline:
                 break
 
         if self.current_phase != selected["phase"]:
-            self.current_phase = selected["phase"]
-            self.anchor_cycler.set_phase(self.current_phase)
-            anchor = self.anchor_cycler.force_anchor(selected["anchor"])
-            self.stats['anchor_rotations'] += 1
-            self._generate_anchor_narration(anchor, lead_in=(selected["phase"] == "lead"))
+            with self._segment_queue_lock:
+                if self._segment_queue:
+                    seg = self._segment_queue.pop(0)
+                    self.current_phase = selected["phase"]
+                    self.anchor_cycler.set_phase(self.current_phase)
+                    self.anchor_cycler.force_anchor(selected["anchor"])
+                    self.current_audio_path = seg["audio_path"]
+                    self.current_video_path = seg["video_path"]
+                    self.stats['anchor_rotations'] += 1
+                    self.logger.info(f"Playing pre-generated segment: {seg['anchor_name']}")
+                else:
+                    self.logger.info(f"Segment {selected['phase']} not ready yet — playing bed")
+                    self._play_bed_music()
+
 
         if elapsed >= total_duration:
             # Story complete. All 5 anchors have spoken. NEVER repeat this story.
@@ -465,21 +483,125 @@ class BroadcastPipeline:
             self.logger.info(f"Backlog low ({count} stories). Rebuilding...")
             self._build_backlog(self.prebuffer_story_count)
 
-    def _queue_story(self, story: Dict) -> None:
-        self.story_index += 1
-        if self.intermission_every_stories and self.story_index % self.intermission_every_stories == 0:
-            self._enqueue_intermission()
+    def _play_bed_music(self) -> None:
+        """Point current_video_path at a looping bed bumper so there is no silence."""
+        bed_path = self.intermission_bed_path
+        if not bed_path or not os.path.exists(bed_path):
+            return
+        try:
+            ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+            image_path = '/home/remvelchio/agent/assets/standby_background.png'
+            if not os.path.exists(image_path):
+                image_path = '/home/remvelchio/agent/tmp/images/anchors_fallback.svg'
+            out_path = os.path.join(self.video_output_dir, f'bed_{ts}.mp4')
+            make_loop(
+                image_path=image_path,
+                out_path=out_path,
+                seconds=180,
+                fps=30,
+                audio_path=bed_path,
+                ticker_text='AINN • Coming up next...'
+            )
+            self.current_video_path = out_path
+            self.current_audio_path = bed_path
+        except Exception as e:
+            self.logger.warning(f'Bed music generation failed: {e}')
 
-        self.current_story = story
-        self.stats['stories_covered'] += 1
+    def _pregenerate_story_segments(self, story: Dict) -> None:
+        """
+        Serially pre-generate all 5 anchor segments for a story.
+        A -> B -> C -> D -> E in order so each anchor sees the previous
+        anchor LLM output, preserving the debate/agree/disagree chain.
+        Completed segments are pushed into self._segment_queue as they finish.
+        """
+        self.logger.info('PRE-GEN: Starting serial pre-generation for all 5 anchors')
+        story_snapshot = dict(story)
 
-        self.anchor_cycler.start_story(story['guid'])
         for segment in self.story_schedule:
-            self.current_phase = segment["phase"]
-            self.anchor_cycler.set_phase(self.current_phase)
-            anchor = self.anchor_cycler.force_anchor(segment["anchor"])
-            self.stats['anchor_rotations'] += 1
-            self._generate_anchor_narration(anchor, lead_in=(segment["phase"] == "lead"))
+            anchor_name = segment['phase'] and segment['anchor']
+            anchor_name = segment['anchor']
+            phase = segment['phase']
+
+            anchor = None
+            for a in self.anchor_cycler.anchors:
+                if a.name == anchor_name:
+                    anchor = a
+                    break
+            if anchor is None:
+                self.logger.error(f'PRE-GEN: Could not find anchor object for {anchor_name}')
+                continue
+
+            self.logger.info(f'PRE-GEN: Generating segment for {anchor_name} (phase={phase})')
+
+            try:
+                self.anchor_cycler.set_phase(phase)
+
+                commentary = self.anchor_cycler.get_perspective_text(
+                    story_snapshot,
+                    force_refresh=True,
+                    force_anchor=anchor
+                )
+                text = commentary.get('text') or story_snapshot.get('summary') or story_snapshot.get('title', '')
+                text = re.sub(r'https?://\S+', '', text).strip()
+
+                if phase == 'lead':
+                    text = f'And now onto our next story. {text}'
+
+                self._log_narration(anchor_name, text)
+
+                audio_path = self.tts.synthesize(text, pitch=anchor.pitch, voice=anchor_name)
+
+                try:
+                    img_prompt = (
+                        f'TV news broadcast graphic for: {story_snapshot.get("title", "")}. '
+                        f'Visual angle: {getattr(anchor, "focus", "")}. '
+                        f'Style: high-end cable news, cinematic, '
+                        f'{getattr(anchor, "perspective", "").split(";")[0]}. '
+                        f'1024x576 broadcast resolution.'
+                    )
+                    image_path = self.image_gen.generate(img_prompt, width=1024, height=576, steps=4)
+                    story_snapshot['image_url'] = image_path
+                except Exception as e:
+                    self.logger.warning(f'PRE-GEN: Per-anchor image gen failed for {anchor_name}: {e}')
+                    image_path = story_snapshot.get('image_url') or '/home/remvelchio/agent/tmp/images/anchors_fallback.svg'
+
+                ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+                safe_name = anchor_name.replace(' ', '_')
+                out_path = os.path.join(
+                    self.video_output_dir,
+                    f'story_{ts}_{safe_name}.mp4'
+                )
+                seconds = None if audio_path else self.video_default_duration
+                video_path = make_loop(
+                    image_path=image_path,
+                    out_path=out_path,
+                    seconds=seconds,
+                    fps=30,
+                    audio_path=audio_path,
+                    ticker_text=None,
+                )
+
+                with self._segment_queue_lock:
+                    self._segment_queue.append({
+                        'phase':       phase,
+                        'anchor_name': anchor_name,
+                        'audio_path':  audio_path,
+                        'video_path':  video_path,
+                    })
+                self.logger.info(f'PRE-GEN: Segment ready -> {anchor_name} ({video_path})')
+
+            except Exception as e:
+                self.logger.error(f'PRE-GEN: Failed for {anchor_name}: {e}')
+
+        self._pregen_done = True
+        self.logger.info('PRE-GEN: All 5 segments ready in queue')
+
+    def _queue_story(self, story: Dict) -> None:
+        """Queue a story for backlog pre-buffering only. Does NOT trigger live narration.
+        Live narration is handled exclusively by _transition_to_story + _apply_story_schedule.
+        """
+        # Just store for backlog - do not fire narration threads here
+        self.logger.info(f"Queued story for backlog: {story.get('title', '?')}")
 
     def _enqueue_intermission(self) -> None:
         """Create a short intermission bumper video."""
@@ -533,7 +655,7 @@ class BroadcastPipeline:
 
         # EigenTrace Stage 1+2: Score the narration
         try:
-            metrics = compute_trace_metrics(text)
+            metrics = compute_trace_metrics(text) if text and len(text.split()) >= 5 else {"status": "GIBBERISH", "spectral_entropy": 0.0, "pulse_variance": 0.0, "pulse_range": 0.0, "reason": "too short"}
             story_title = ""
             if self.current_story:
                 story_title = self.current_story.get("title", "")
@@ -573,43 +695,57 @@ class BroadcastPipeline:
     def _generate_anchor_narration(self, anchor, lead_in: bool = False) -> None:
         if not self.current_story:
             return
-        try:
-            commentary = self.anchor_cycler.get_perspective_text(self.current_story, force_refresh=True)
-            text = commentary.get('text') or self.current_story.get('summary') or self.current_story.get('title')
-            text = re.sub(r"https?://\S+", "", text).strip()
-            if lead_in:
-                text = f"And now onto our next story. {text}"
-            self._log_narration(anchor.name, text)
-            audio_path = self.tts.synthesize(text, pitch=anchor.pitch, voice=anchor.name)
-            self.current_audio_path = audio_path
-            # Generate a fresh image for this anchor's segment
-            try:
-                img_prompt = (
-                    f"TV news broadcast graphic for: {self.current_story.get('title', '')}. "
-                    f"Visual angle: {anchor.focus}. "
-                    f"Style: high-end cable news, cinematic, {anchor.perspective.split(';')[0]}. "
-                    f"1024x576 broadcast resolution."
-                )
-                image_path = self.image_gen.generate(img_prompt, width=1024, height=576, steps=4)
-                self.current_story['image_url'] = image_path
-            except Exception as e:
-                self.logger.warning(f"Per-anchor image gen failed: {e}")
-                image_path = self.current_story.get('image_url') or "/home/remvelchio/agent/tmp/images/anchors_fallback.svg"
-            ts = datetime.now().strftime('%Y%m%d-%H%M%S')
-            safe_name = anchor.name.replace(' ', '_')
-            out_path = os.path.join(self.video_output_dir, f"story_{ts}_{safe_name}.mp4")
-            seconds = None if audio_path else self.video_default_duration
-            video_path = make_loop(
-                image_path=image_path,
-                out_path=out_path,
-                seconds=seconds,
-                fps=30,
-                audio_path=audio_path,
-                ticker_text=None,
-            )
-            self.current_video_path = video_path
-        except Exception as e:
-            self.logger.error(f"Narration generation failed: {e}")
+        # Snapshot everything NOW — background thread must not read live state
+        story_snapshot = dict(self.current_story)
+        anchor_name  = anchor.name
+        _anchor_snapshot = anchor
+        anchor_pitch = anchor.pitch
+        anchor_focus = getattr(anchor, 'focus', '')
+        anchor_persp = getattr(anchor, 'perspective', '').split(';')[0]
+        _lead_in     = lead_in
+
+        def _run():
+            with self._narration_lock:
+                try:
+                    commentary = self.anchor_cycler.get_perspective_text(story_snapshot, force_refresh=True, force_anchor=_anchor_snapshot)
+                    text = commentary.get('text') or story_snapshot.get('summary') or story_snapshot.get('title')
+                    text = re.sub(r"https?://\S+", "", text).strip()
+                    if _lead_in:
+                        text = f"And now onto our next story. {text}"
+                    self._log_narration(anchor_name, text)
+                    audio_path = self.tts.synthesize(text, pitch=anchor_pitch, voice=anchor_name)
+                    self.current_audio_path = audio_path
+                    # Generate a fresh image for this anchor's segment
+                    try:
+                        img_prompt = (
+                            f"TV news broadcast graphic for: {story_snapshot.get('title', '')}. "
+                            f"Visual angle: {anchor_focus}. "
+                            f"Style: high-end cable news, cinematic, {anchor_persp}. "
+                            f"1024x576 broadcast resolution."
+                        )
+                        image_path = self.image_gen.generate(img_prompt, width=1024, height=576, steps=4)
+                        story_snapshot['image_url'] = image_path
+                    except Exception as e:
+                        self.logger.warning(f"Per-anchor image gen failed: {e}")
+                        image_path = story_snapshot.get('image_url') or "/home/remvelchio/agent/tmp/images/anchors_fallback.svg"
+                    ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+                    safe_name = anchor_name.replace(' ', '_')
+                    out_path = os.path.join(self.video_output_dir, f"story_{ts}_{safe_name}.mp4")
+                    seconds = None if audio_path else self.video_default_duration
+                    video_path = make_loop(
+                        image_path=image_path,
+                        out_path=out_path,
+                        seconds=seconds,
+                        fps=30,
+                        audio_path=audio_path,
+                        ticker_text=None,
+                    )
+                    self.current_video_path = video_path
+                except Exception as e:
+                    self.logger.error(f"Narration generation failed: {e}")
+
+        self._narration_thread = threading.Thread(target=_run, daemon=True)
+        self._narration_thread.start()
 
     def get_status(self) -> Dict:
         """

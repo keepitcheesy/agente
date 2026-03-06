@@ -6,6 +6,16 @@
 
 set -uo pipefail
 
+# ── PID LOCK: only one master.sh may run at a time ──────────────────
+LOCKFILE="/tmp/agente_master.lock"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+    echo "$(date): MASTER already running (lock held). Exiting duplicate."
+    exit 1
+fi
+echo $$ > "$LOCKFILE"
+# ─────────────────────────────────────────────────────────────────────
+
 STREAM_URL="${STREAM_URL:-rtmp://localhost:1935/live/abc123}"
 BED_MUSIC="/home/remvelchio/agent/assets/bed_22050.wav"
 UDP_PORT="udp://127.0.0.1:10000?fifo_size=1000000&overrun_nonfatal=1"
@@ -13,7 +23,7 @@ UDP_PORT="udp://127.0.0.1:10000?fifo_size=1000000&overrun_nonfatal=1"
 TICKER_FILE="/home/remvelchio/agent/tmp/ticker_scroll.txt"
 TICKER_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-echo "$(date): MASTER TRANSMITTER STARTING"
+echo "$(date): MASTER TRANSMITTER STARTING (PID=$$)"
 echo "$(date): Listening on UDP 10000, streaming to $STREAM_URL"
 echo "$(date): Bed music: $BED_MUSIC"
 

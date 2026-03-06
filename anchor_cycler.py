@@ -203,11 +203,11 @@ class AnchorCycler:
             return self.rotate()
         return None
 
-    def get_perspective_text(self, story: Dict, force_refresh: bool = False) -> Dict[str, str]:
+    def get_perspective_text(self, story: Dict, force_refresh: bool = False, force_anchor=None) -> Dict[str, str]:
         """
         Generate anchor commentary once per rotation with memory + synthesis.
         """
-        anchor = self.get_current_anchor()
+        anchor = force_anchor if force_anchor is not None else self.get_current_anchor()
 
         if (not force_refresh) and self.last_rotation_for_commentary == self.rotation_count and self.current_commentary:
             return {
@@ -238,6 +238,10 @@ class AnchorCycler:
             self.last_pair_stances = self.last_pair_stances[-4:]
 
         self._update_story_memory(anchor.name, stance, llm_text)
+
+        # Store Anchor A's final spoken text so B-E can reference it
+        if anchor.name == "Anchor A":
+            self.last_vance_text = llm_text
 
         self.current_commentary = llm_text
         self.last_rotation_for_commentary = self.rotation_count
@@ -307,19 +311,20 @@ class AnchorCycler:
         is_synthesis = self.phase in ("synthesis", "roundtable") and anchor.name == "Anchor E"
 
         if EIGENTRACE_AVAILABLE:
-            if is_vance and self.last_vance_text:
-                result = eigentrace.analyze(self.last_vance_text, model, "Anchor A")
+            if is_vance:
+                # Analyze wire_text immediately so metrics are ready for responders
+                result = eigentrace.analyze(wire_text, model, "Anchor A")
                 if result:
                     self.last_vance_metrics = result.metrics
                     self.last_wire_text = wire_text
                     title = story.get("title", "")
-                    vance_snap = self.last_vance_text
                     def _run_ddg(t, v):
                         try:
                             return eigentrace.ddg_research_desk(t, v)
                         except Exception:
                             return "RESEARCH DESK: offline."
-                    self._ddg_future = self._ddg_executor.submit(_run_ddg, title, vance_snap)
+                    self._ddg_future = self._ddg_executor.submit(
+                        _run_ddg, title, wire_text)
 
             if is_responder and self.last_vance_metrics is not None:
                 ddg_report = "RESEARCH DESK: pending."
@@ -413,7 +418,7 @@ class AnchorCycler:
             "Anchor A": "boomer news veteran; authoritative, references history and institutions, speaks like a seasoned anchor who has seen it all",
             "Anchor B": "gen X skeptic; cynical, blunt, anti-hype, references 90s/2000s tech busts, asks who profits from this",
             "Anchor C": "millennial analyst; data-literate, startup-brained, optimistically anxious, references platforms and generational economics",
-            "Anchor D": "zoomer cultural critic; meme-fluent, blunt, short attention span energy, says things are cringe or based, asks if anyone under 30 cares",
+            "Anchor D": "knowledge desk correspondent; fact-focused, references the research desk report directly, challenges or confirms what Anchor B and C said with hard data, cites specific numbers or historical precedents, ends by naming one thing the other anchors got wrong",
             "Anchor E": "AI-aware moderator; calm, systems-minded, identifies where others secretly agree, calls out circular debate, delivers synthesis"
         }
         persona = archetypes.get(anchor.name, anchor.perspective)
